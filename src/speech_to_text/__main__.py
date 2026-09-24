@@ -14,6 +14,8 @@ from .history import STATUSES
 from .hotkey import validate_hotkey
 
 LOG_PATH = Path.home() / "Library" / "Logs" / "speech-to-text.log"
+# Everything that isn't a normal log line: Python errors printed by libraries, and native crash traces.
+CONSOLE_LOG_PATH = LOG_PATH.with_name("speech-to-text-console.log")
 
 
 def setup_logging() -> None:
@@ -23,6 +25,27 @@ def setup_logging() -> None:
         logging.StreamHandler(),
     ]
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", handlers=handlers)
+
+
+def capture_console_output() -> None:
+    """Opened from Finder, the app's console output goes nowhere. Keep it, plus native crash traces, in a file."""
+    import faulthandler
+    import threading
+
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    CONSOLE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    console = open(CONSOLE_LOG_PATH, "a", buffering=1, encoding="utf-8")
+    console.write(f"\n===== started {__import__('datetime').datetime.now():%Y-%m-%d %H:%M:%S} =====\n")
+    sys.stdout = sys.stderr = console
+    faulthandler.enable(file=console, all_threads=True)  # a hard crash still leaves a Python traceback
+
+    def log_thread_crash(hook_args) -> None:
+        logging.getLogger("speech_to_text").error(
+            "Uncaught error in thread %s", hook_args.thread.name if hook_args.thread else "?",
+            exc_info=(hook_args.exc_type, hook_args.exc_value, hook_args.exc_traceback),
+        )
+
+    threading.excepthook = log_thread_crash
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,11 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    if getattr(sys, "frozen", False):
-        # Opened from Finder there may be no console: give progress bars somewhere harmless to write.
-        os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-        sys.stdout = sys.stdout or open(os.devnull, "w")
-        sys.stderr = sys.stderr or open(os.devnull, "w")
+    if getattr(sys, "frozen", False) and "--self-test" not in (argv or sys.argv):
+        capture_console_output()
     # parse_known_args: macOS can pass extra launch arguments when the app is opened from Finder.
     args, _unknown = build_parser().parse_known_args(argv)
     if args.self_test:

@@ -111,6 +111,7 @@ class SpeechToTextApp(rumps.App):
         for item in (
             rumps.MenuItem("Open config file", callback=lambda _: subprocess.Popen(["open", "-t", str(CONFIG_PATH)])),
             rumps.MenuItem("Open log", callback=lambda _: subprocess.Popen(["open", self.log_path])),
+            rumps.MenuItem("Show log files in Finder", callback=lambda _: subprocess.Popen(["open", "-R", self.log_path])),
         ):
             advanced.add(item)
         self.login_item = rumps.MenuItem("Open at login", callback=self.toggle_login_item)

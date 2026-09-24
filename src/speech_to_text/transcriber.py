@@ -40,11 +40,12 @@ def resolve_backend(backend: str) -> str:
 
 
 class Transcriber:
-    def __init__(self, config: TranscriptionConfig, prompt: str):
+    def __init__(self, config: TranscriptionConfig):
         self.config = config
-        self.prompt = prompt
         self.backend = resolve_backend(config.backend)
-        self.language = config.language or None
+        self.languages = [lang.strip().lower() for lang in config.languages if lang.strip()]
+        if self.config.model.endswith(".en"):
+            self.languages = ["en"]
         self._model = None  # faster-whisper model; mlx caches its own
 
     def load(self) -> None:
@@ -55,23 +56,60 @@ class Transcriber:
             from faster_whisper import WhisperModel
 
             self._model = WhisperModel(self.config.model, device="auto", compute_type="int8")
-        self._run(np.zeros(SAMPLE_RATE, dtype=np.float32), prompt=None)
+        warm_up_language = self.languages[0] if self.languages else "en"
+        self._run(np.zeros(SAMPLE_RATE, dtype=np.float32), language=warm_up_language, prompt=None)
         log.info("Model ready in %.1fs", time.monotonic() - started)
 
-    def transcribe(self, audio: np.ndarray) -> str:
+    def detect_language(self, audio: np.ndarray) -> str | None:
+        """Pick the spoken language, but only among the configured ones.
+
+        Whisper's open-ended detection often mislabels short Portuguese clips as Spanish or
+        Galician; restricting the choice to the languages you actually speak fixes that.
+        """
+        if len(self.languages) == 1:
+            return self.languages[0]
+        try:
+            probabilities = self._language_probabilities(audio)
+        except Exception:
+            log.exception("Language detection failed")
+            return self.languages[0] if self.languages else None
+        if not self.languages:
+            return max(probabilities, key=probabilities.get)
+        best = max(self.languages, key=lambda lang: probabilities.get(lang, 0.0))
+        log.info("Language: %s (%s)", best, ", ".join(f"{l}={probabilities.get(l, 0.0):.2f}" for l in self.languages))
+        return best
+
+    def transcribe(self, audio: np.ndarray, language: str | None, prompt: str | None) -> str:
         started = time.monotonic()
-        text = self._run(audio, prompt=self.prompt)
+        text = self._run(audio, language=language, prompt=prompt)
         log.info("Transcribed %.1fs of audio in %.2fs", len(audio) / SAMPLE_RATE, time.monotonic() - started)
         return text
 
-    def _run(self, audio: np.ndarray, prompt: str | None) -> str:
+    def _language_probabilities(self, audio: np.ndarray) -> dict[str, float]:
+        if self.backend == "mlx":
+            import mlx.core as mx
+            from mlx_whisper.audio import N_FRAMES, N_SAMPLES, log_mel_spectrogram, pad_or_trim
+            from mlx_whisper.transcribe import ModelHolder
+
+            model = ModelHolder.get_model(_MLX_REPOS.get(self.config.model, self.config.model), mx.float16)
+            mel = log_mel_spectrogram(audio, n_mels=model.dims.n_mels, padding=N_SAMPLES)
+            segment = pad_or_trim(mel, N_FRAMES, axis=-2).astype(mx.float16)
+            _tokens, probabilities = model.detect_language(segment)
+            return {lang: float(p) for lang, p in probabilities.items()}
+
+        if self._model is None:
+            raise RuntimeError("Transcriber.load() must be called first")
+        _language, _probability, all_probabilities = self._model.detect_language(audio)
+        return {lang: float(p) for lang, p in all_probabilities}
+
+    def _run(self, audio: np.ndarray, language: str | None, prompt: str | None) -> str:
         if self.backend == "mlx":
             import mlx_whisper
 
             result = mlx_whisper.transcribe(
                 audio,
                 path_or_hf_repo=_MLX_REPOS.get(self.config.model, self.config.model),
-                language=self.language,
+                language=language,
                 initial_prompt=prompt,
                 # Each dictation is independent; conditioning on previous windows
                 # makes long recordings prone to repetition loops.
@@ -83,7 +121,7 @@ class Transcriber:
             raise RuntimeError("Transcriber.load() must be called first")
         segments, _info = self._model.transcribe(
             audio,
-            language=self.language,
+            language=language,
             initial_prompt=prompt,
             condition_on_previous_text=False,
             vad_filter=True,

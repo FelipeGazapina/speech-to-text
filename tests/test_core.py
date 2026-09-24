@@ -5,7 +5,8 @@ from speech_to_text.config import DEFAULT_CONFIG_TOML, load_config, parse_config
 from speech_to_text.hotkey import TapDetector, validate_hotkey
 from speech_to_text.prompts import CLEANUP_EXAMPLES, cleanup_messages, whisper_prompt
 from speech_to_text.recorder import is_silent, resample
-from speech_to_text.transcriber import SAMPLE_RATE, resolve_backend
+from speech_to_text.config import TranscriptionConfig
+from speech_to_text.transcriber import SAMPLE_RATE, Transcriber, resolve_backend
 
 RIGHT_OPTION, RIGHT_OPTION_FLAG, LEFT_SHIFT = 61, 0x40, 56
 
@@ -15,6 +16,8 @@ def test_default_config():
     assert config.hotkey == "right_option"
     assert config.transcription.model == "large-v3-turbo"
     assert config.cleanup.enabled is True
+    assert config.transcription.languages == ["en", "pt"]
+    assert config.history.enabled and config.history.learn
     assert config.replacements == {}
 
 
@@ -72,16 +75,34 @@ def test_unknown_hotkey():
 
 
 def test_whisper_prompt_puts_user_vocabulary_first_and_stays_short():
-    prompt = whisper_prompt(["Zyxel", "API"])
+    prompt = whisper_prompt("en", ["Zyxel", "API"])
     assert prompt.index("Zyxel") < prompt.index("JSON")
     assert prompt.count("API") == 1
     assert len(prompt.split()) < 200
 
 
-def test_cleanup_messages_shape():
-    messages = cleanup_messages("hello")
-    assert len(messages) == 2 + 2 * len(CLEANUP_EXAMPLES)
+def test_whisper_prompt_language_and_recent_style():
+    recent = " ".join(f"palavra{i}" for i in range(100))
+    prompt = whisper_prompt("pt", ["Supabase"], recent)
+    assert prompt.startswith("Um engenheiro de software")
+    assert prompt.endswith("palavra99")
+    assert "palavra59" not in prompt  # only the last 40 words
+    assert len(prompt.split()) < 200
+
+
+def test_cleanup_messages_include_learned_profile():
+    messages = cleanup_messages(
+        "hello",
+        language="pt",
+        vocabulary=["Supabase"],
+        corrections=[("get hub", "GitHub")],
+        examples=[("raw words", "Fixed words.")],
+    )
+    assert len(messages) == 2 + 2 * (len(CLEANUP_EXAMPLES) + 1)
     assert [m["role"] for m in messages[1:3]] == ["user", "assistant"]
+    assert "Supabase" in messages[0]["content"] and '"get hub" -> "GitHub"' in messages[0]["content"]
+    assert messages[-2]["content"] == "Fixed words."
+    assert 'language="Portuguese"' in messages[-1]["content"]
 
 
 def test_resample_and_silence():
@@ -91,6 +112,25 @@ def test_resample_and_silence():
     assert not is_silent(out)
     assert is_silent(np.zeros(SAMPLE_RATE, dtype=np.float32))
     assert is_silent(out[:1000])
+
+
+class _FakeTranscriber(Transcriber):
+    def __init__(self, languages, probabilities, model="large-v3-turbo"):
+        super().__init__(TranscriptionConfig(backend="faster-whisper", model=model, languages=languages))
+        self._probabilities = probabilities
+
+    def _language_probabilities(self, audio):
+        return self._probabilities
+
+
+def test_language_detection_is_restricted_to_configured_languages():
+    audio = np.zeros(SAMPLE_RATE, dtype=np.float32)
+    # Whisper thinks it's Galician/Spanish, but among en/pt it's clearly Portuguese.
+    probs = {"gl": 0.5, "es": 0.3, "pt": 0.15, "en": 0.05}
+    assert _FakeTranscriber(["en", "pt"], probs).detect_language(audio) == "pt"
+    assert _FakeTranscriber(["en"], probs).detect_language(audio) == "en"
+    assert _FakeTranscriber([], probs).detect_language(audio) == "gl"
+    assert _FakeTranscriber(["en", "pt"], probs, model="small.en").detect_language(audio) == "en"
 
 
 def test_backend_resolution():

@@ -10,8 +10,13 @@ import time
 _V_KEYCODE = 9
 
 
-def paste_text(text: str, restore_clipboard: bool = True) -> None:
+def paste_text(text: str, restore_clipboard: bool = True) -> bool:
+    """Paste at the cursor. Returns False if pasting isn't possible; the text is then left on the clipboard."""
     from AppKit import NSPasteboard, NSPasteboardTypeString
+
+    if not accessibility_trusted():
+        copy_text(text)
+        return False
 
     pasteboard = NSPasteboard.generalPasteboard()
     saved = _snapshot(pasteboard) if restore_clipboard else None
@@ -28,6 +33,27 @@ def paste_text(text: str, restore_clipboard: bool = True) -> None:
         time.sleep(0.4)
         if pasteboard.changeCount() == our_change:  # don't clobber something the user copied meanwhile
             _restore(pasteboard, saved)
+    return True
+
+
+def accessibility_trusted() -> bool:
+    """Synthetic key presses are silently dropped without Accessibility permission."""
+    try:
+        from ApplicationServices import AXIsProcessTrusted
+
+        return bool(AXIsProcessTrusted())
+    except ImportError:
+        return True  # can't tell; try anyway
+
+
+def frontmost_app_name() -> str | None:
+    try:
+        from AppKit import NSWorkspace
+
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        return str(app.localizedName()) if app else None
+    except Exception:
+        return None
 
 
 def copy_text(text: str) -> None:

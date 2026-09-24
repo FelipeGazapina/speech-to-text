@@ -25,6 +25,12 @@ def test_basic_cleanup(raw, expected):
     assert basic_cleanup(raw) == expected
 
 
+def test_um_is_a_word_in_portuguese():
+    assert basic_cleanup("Uh, cria um branch novo.", language="pt") == "Cria um branch novo."
+    assert basic_cleanup("Um, create a branch.", language="en") == "Create a branch."
+    assert basic_cleanup("Obrigado.", language="pt") == ""
+
+
 def test_replacements_are_whole_word_and_case_insensitive():
     replacements = {"cube control": "kubectl", "get hub": "GitHub"}
     assert basic_cleanup("Run Cube Control apply, then push to get hub.", replacements) == (

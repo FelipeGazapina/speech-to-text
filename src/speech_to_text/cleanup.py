@@ -20,27 +20,41 @@ from .prompts import cleanup_messages
 
 log = logging.getLogger(__name__)
 
-_FILLERS = re.compile(r"(?<!\w)(?:u+m+|u+h+|e+r+m+|a+h+|h+m+|m+h*m+)(?!\w)[,.]?\s*", re.IGNORECASE)
+def _filler_pattern(words: str) -> re.Pattern:
+    return re.compile(rf"(?<!\w)(?:{words})(?!\w)[,.]?\s*", re.IGNORECASE)
+
+
+# Hesitation sounds only; real filler *words* (like, tipo, né) are left to the cleanup model.
+# "um" is only a filler in English: in Portuguese it's the word "a/one" ("um bug").
+_FILLERS_ANY_LANGUAGE = _filler_pattern(r"u+h+|a+h+n+|e+r+m+|h+m+|m+h*m+")
+_FILLERS_ENGLISH = _filler_pattern(r"u+m+|u+h+|a+h+n*|e+r+m+|h+m+|m+h*m+")
 # Whisper's classic output on silence/noise. Dropped only when it's the ENTIRE transcript.
 _HALLUCINATIONS = {
     "", "you", "thank you", "thanks", "thank you for watching", "thanks for watching",
     "bye", "subtitles by the amara.org community", ".",
+    "obrigado", "obrigada", "tchau", "legendas pela comunidade amara.org",
 }
 
 
-def basic_cleanup(text: str, replacements: dict[str, str] | None = None) -> str:
+def basic_cleanup(text: str, replacements: dict[str, str] | None = None, language: str | None = "en") -> str:
     starts_sentence = text.strip()[:1].isupper()
-    text = _FILLERS.sub("", text)
+    text = (_FILLERS_ENGLISH if language == "en" else _FILLERS_ANY_LANGUAGE).sub("", text)
     text = re.sub(r"\s+", " ", text).strip()
     text = re.sub(r"\s+([,.!?;:])", r"\1", text)
     text = re.sub(r"^[,.;:]\s*", "", text)
     if _normalize(text) in _HALLUCINATIONS:
         return ""
-    for spoken, written in sorted((replacements or {}).items(), key=lambda kv: -len(kv[0])):
-        text = re.sub(rf"(?<!\w){re.escape(spoken)}(?!\w)", lambda _: written, text, flags=re.IGNORECASE)
+    text = apply_replacements(text, replacements)
     # Removing a leading "Um," can leave the sentence starting lowercase.
     if starts_sentence and text[:1].islower() and not _looks_like_code(text.split()[0]):
         text = text[0].upper() + text[1:]
+    return text
+
+
+def apply_replacements(text: str, replacements: dict[str, str] | None) -> str:
+    """Case-insensitive, whole-word find/replace; longest phrases first."""
+    for spoken, written in sorted((replacements or {}).items(), key=lambda kv: -len(kv[0])):
+        text = re.sub(rf"(?<!\w){re.escape(spoken)}(?!\w)", lambda _: written, text, flags=re.IGNORECASE)
     return text
 
 
@@ -80,13 +94,28 @@ class LLMCleaner:
         if self.is_available():
             self._post({"model": self.config.model, "messages": [], "keep_alive": "30m"})
 
-    def clean(self, text: str) -> str | None:
+    def clean(
+        self,
+        text: str,
+        *,
+        language: str | None = None,
+        vocabulary: list[str] | None = None,
+        corrections: list[tuple[str, str]] | None = None,
+        examples: list[tuple[str, str]] | None = None,
+    ) -> str | None:
         """Return the cleaned text, or None to signal 'use the basic text instead'."""
         if not text or not self.is_available():
             return None
+        messages = cleanup_messages(
+            text,
+            language=language,
+            vocabulary=[*self.config.vocabulary, *(vocabulary or [])],
+            corrections=corrections,
+            examples=examples,
+        )
         payload = {
             "model": self.config.model,
-            "messages": cleanup_messages(text, self.config.vocabulary),
+            "messages": messages,
             "stream": False,
             "keep_alive": "30m",
             "options": {"temperature": 0},
@@ -117,7 +146,7 @@ class LLMCleaner:
 
 def strip_model_output(text: str) -> str:
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    text = re.sub(r"</?transcript>", "", text)
+    text = re.sub(r"</?transcript[^>]*>", "", text)
     text = text.strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'`":
         text = text[1:-1].strip()

@@ -28,7 +28,10 @@ def setup_logging() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="stt", description="Tap a key, talk, tap again: text appears at your cursor.")
     parser.add_argument("--config-path", action="store_true", help="print the config file location and exit")
-    parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)  # used by the app build
+    # Used by the app build: check the bundle, optionally transcribing real speech with a small model.
+    parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--self-test-model", help=argparse.SUPPRESS)
+    parser.add_argument("--self-test-audio", nargs="*", default=[], help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     history = commands.add_parser("history", help="list past dictations (newest first)")
@@ -64,7 +67,7 @@ def main(argv: list[str] | None = None) -> None:
     # parse_known_args: macOS can pass extra launch arguments when the app is opened from Finder.
     args, _unknown = build_parser().parse_known_args(argv)
     if args.self_test:
-        self_test()
+        self_test(args.self_test_model, args.self_test_audio)
         return
     first_run = not CONFIG_PATH.exists()
     config = load_config()
@@ -84,8 +87,8 @@ def main(argv: list[str] | None = None) -> None:
     SpeechToTextApp(config, str(LOG_PATH), first_run=first_run).run()
 
 
-def self_test() -> None:
-    """Check that the packaged app contains everything it needs (run by the build, no mic or model needed)."""
+def self_test(model: str | None = None, audio_files: list[str] | None = None) -> None:
+    """Check that the packaged app contains everything it needs. Run by the build (no microphone needed)."""
     import importlib
 
     import mlx.core as mx
@@ -98,6 +101,22 @@ def self_test() -> None:
     mel = log_mel_spectrogram(np.zeros(16_000, dtype=np.float32))  # needs the bundled mel filters
     tokens = get_tokenizer(True, num_languages=100, language="pt").encode("olá mundo")  # bundled vocabulary
     print(f"mlx {mx.__version__} (metal: {mx.metal.is_available()}), mel {tuple(mel.shape)}, {len(tokens)} tokens")
+
+    if model:
+        from .config import TranscriptionConfig
+        from .pipeline import load_wav
+        from .prompts import whisper_prompt
+        from .transcriber import Transcriber
+
+        transcriber = Transcriber(TranscriptionConfig(model=model, languages=["en", "pt"]))
+        transcriber.load()
+        for path in audio_files or []:
+            audio = load_wav(Path(path))
+            language = transcriber.detect_language(audio)
+            text = transcriber.transcribe(audio, language, whisper_prompt(language))
+            print(f"{Path(path).name}: [{language}] {text}")
+            if not text:
+                sys.exit(f"self-test: no text transcribed from {path}")
     print("self-test ok")
 
 

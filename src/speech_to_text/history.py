@@ -1,7 +1,9 @@
-"""Every dictation, saved locally in SQLite: recover text after a failed paste, and learn from it.
+"""Every dictation, saved locally in SQLite: find any past text again, and learn from it.
 
-The database lives in ~/Library/Application Support/speech-to-text/history.db and never
-leaves the Mac. Browse it with `stt history`, or any SQLite tool.
+Every recording that contains speech gets a row, whatever happens next: pasted, paste failed,
+filtered out as likely noise, or transcription crashed (then the audio itself is kept so it
+can be retried). The database lives in ~/Library/Application Support/speech-to-text/history.db
+and never leaves the Mac. Browse it with `stt history`, or any SQLite tool.
 """
 
 from __future__ import annotations
@@ -28,7 +30,9 @@ CREATE TABLE IF NOT EXISTS transcriptions (
     transcribe_seconds REAL,
     cleanup_seconds    REAL,
     cleanup_used       INTEGER NOT NULL DEFAULT 0,
-    pasted             INTEGER         -- NULL = not attempted yet, 0 = failed, 1 = pasted
+    status             TEXT NOT NULL DEFAULT 'saved',  -- see STATUSES
+    error              TEXT,           -- why it failed, for status 'failed'
+    audio_path         TEXT            -- the recording, kept only while transcription has failed
 );
 CREATE INDEX IF NOT EXISTS transcriptions_created_at ON transcriptions (created_at);
 
@@ -43,6 +47,15 @@ CREATE TABLE IF NOT EXISTS corrections (
 """
 
 
+# saved:        text saved, paste not attempted yet (or the app stopped mid-way)
+# pasted:       pasted at the cursor
+# paste_failed: pasting didn't work; the text was left on the clipboard
+# filtered:     Whisper returned something that looks like noise ("Thank you."), so nothing was pasted
+# failed:       transcription crashed; the audio is kept at audio_path so it can be retried
+# recovered:    a failed dictation that was retried successfully
+STATUSES = ("saved", "pasted", "paste_failed", "filtered", "failed", "recovered")
+
+
 @dataclass
 class Transcription:
     id: int
@@ -52,7 +65,9 @@ class Transcription:
     final_text: str
     corrected_text: str | None
     app_name: str | None
-    pasted: int | None
+    status: str
+    error: str | None
+    audio_path: str | None
 
     @property
     def best_text(self) -> str:
@@ -65,9 +80,11 @@ class HistoryStore:
     def __init__(self, path: Path | None = None):
         self.path = path = path or DB_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.audio_dir = path.parent / "audio"
         with self._connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(_SCHEMA)
+            _migrate(db)
 
     @contextmanager
     def _connect(self):
@@ -92,20 +109,45 @@ class HistoryStore:
         transcribe_seconds: float | None = None,
         cleanup_seconds: float | None = None,
         cleanup_used: bool = False,
+        status: str = "saved",
+        error: str | None = None,
+        audio_path: str | None = None,
     ) -> int:
+        _check_status(status)
         with self._connect() as db:
             cursor = db.execute(
                 """INSERT INTO transcriptions (raw_text, final_text, language, app_name, audio_seconds,
-                                               transcribe_seconds, cleanup_seconds, cleanup_used)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                                               transcribe_seconds, cleanup_seconds, cleanup_used,
+                                               status, error, audio_path)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (raw_text, final_text, language, app_name, audio_seconds, transcribe_seconds,
-                 cleanup_seconds, int(cleanup_used)),
+                 cleanup_seconds, int(cleanup_used), status, error, audio_path),
             )
             return int(cursor.lastrowid)
 
-    def mark_pasted(self, transcription_id: int, pasted: bool) -> None:
+    def set_status(self, transcription_id: int, status: str) -> None:
+        _check_status(status)
         with self._connect() as db:
-            db.execute("UPDATE transcriptions SET pasted = ? WHERE id = ?", (int(pasted), transcription_id))
+            db.execute("UPDATE transcriptions SET status = ? WHERE id = ?", (status, transcription_id))
+
+    def record_retry(
+        self,
+        transcription_id: int,
+        *,
+        raw_text: str,
+        final_text: str,
+        language: str | None,
+        cleanup_used: bool,
+    ) -> None:
+        """Fill in the text of a dictation whose transcription had failed."""
+        with self._connect() as db:
+            db.execute(
+                """UPDATE transcriptions
+                   SET raw_text = ?, final_text = ?, language = ?, cleanup_used = ?,
+                       status = 'recovered', error = NULL, audio_path = NULL
+                   WHERE id = ?""",
+                (raw_text, final_text, language, int(cleanup_used), transcription_id),
+            )
 
     def set_correction(self, transcription_id: int, corrected_text: str, pairs: list[tuple[str, str]]) -> None:
         with self._connect() as db:
@@ -132,8 +174,21 @@ class HistoryStore:
         rows = self._select("WHERE id = ?", (transcription_id,), limit=1)
         return rows[0] if rows else None
 
-    def recent(self, limit: int = 10, search: str | None = None, language: str | None = None) -> list[Transcription]:
+    def recent(
+        self,
+        limit: int = 10,
+        search: str | None = None,
+        language: str | None = None,
+        status: str | None = None,
+        include_unusable: bool = True,
+    ) -> list[Transcription]:
+        """Newest first. include_unusable=False drops filtered/failed rows (for learning)."""
         clauses, params = [], []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if not include_unusable:
+            clauses.append("status NOT IN ('filtered', 'failed')")
         if search:
             clauses.append("(final_text LIKE ? OR corrected_text LIKE ? OR raw_text LIKE ?)")
             params += [f"%{search}%"] * 3
@@ -174,7 +229,8 @@ class HistoryStore:
             row = db.execute(
                 """SELECT count(*) AS dictations, coalesce(sum(audio_seconds), 0) AS seconds,
                           coalesce(sum(length(final_text) - length(replace(final_text, ' ', '')) + 1), 0) AS words,
-                          coalesce(sum(pasted = 0), 0) AS failed_pastes,
+                          coalesce(sum(status = 'paste_failed'), 0) AS failed_pastes,
+                          coalesce(sum(status = 'failed'), 0) AS failed_transcriptions,
                           coalesce(sum(corrected_text IS NOT NULL), 0) AS corrected
                    FROM transcriptions"""
             ).fetchone()
@@ -183,8 +239,30 @@ class HistoryStore:
     def _select(self, where: str, params: tuple, limit: int) -> list[Transcription]:
         with self._connect() as db:
             rows = db.execute(
-                f"""SELECT id, created_at, language, raw_text, final_text, corrected_text, app_name, pasted
+                f"""SELECT id, created_at, language, raw_text, final_text, corrected_text, app_name,
+                           status, error, audio_path
                     FROM transcriptions {where} ORDER BY id DESC LIMIT ?""",
                 (*params, limit),
             ).fetchall()
         return [Transcription(**dict(r)) for r in rows]
+
+
+def _check_status(status: str) -> None:
+    if status not in STATUSES:
+        raise ValueError(f"Unknown status {status!r}")
+
+
+def _migrate(db: sqlite3.Connection) -> None:
+    """Upgrade databases created by older versions, which tracked only a `pasted` flag."""
+    columns = {row[1] for row in db.execute("PRAGMA table_info(transcriptions)")}
+    if "status" not in columns:
+        db.execute("ALTER TABLE transcriptions ADD COLUMN status TEXT NOT NULL DEFAULT 'saved'")
+        if "pasted" in columns:
+            db.execute(
+                """UPDATE transcriptions SET status = CASE pasted WHEN 1 THEN 'pasted'
+                                                                  WHEN 0 THEN 'paste_failed'
+                                                                  ELSE 'saved' END"""
+            )
+    for column in ("error", "audio_path"):
+        if column not in columns:
+            db.execute(f"ALTER TABLE transcriptions ADD COLUMN {column} TEXT")

@@ -14,20 +14,21 @@ from dataclasses import dataclass
 import numpy as np
 import rumps
 
-from .cleanup import LLMCleaner, apply_replacements, basic_cleanup
+from .cleanup import LLMCleaner
 from .config import CONFIG_PATH, Config
 from .history import HistoryStore
 from .hotkey import HotkeyListener
-from .learning import Profile, build_profile, correction_pairs
+from .learning import correction_pairs
 from .paster import copy_text, frontmost_app_name, paste_text
-from .prompts import whisper_prompt
-from .recorder import Recorder, is_silent
-from .transcriber import SAMPLE_RATE, Transcriber
+from .pipeline import DictationFailed, Pipeline
+from .recorder import Recorder
+from .transcriber import Transcriber
 
 log = logging.getLogger(__name__)
 
 ICON_IDLE, ICON_RECORDING, ICON_WORKING, ICON_LOADING, ICON_ERROR = "🎙", "🔴", "💭", "⏳", "⚠️"
 RECENT_COUNT = 10
+STATUS_ICONS = {"paste_failed": "⚠️ ", "filtered": "🔇 ", "failed": "❌ ", "recovered": "♻️ "}
 
 
 def play_sound(name: str) -> None:
@@ -36,8 +37,9 @@ def play_sound(name: str) -> None:
 
 @dataclass
 class Job:
-    audio: np.ndarray
-    app_name: str | None
+    audio: np.ndarray | None
+    app_name: str | None = None
+    retry_id: int | None = None  # re-transcribe a failed dictation from its saved audio
 
 
 @dataclass
@@ -55,9 +57,12 @@ class SpeechToTextApp(rumps.App):
         self.transcriber = Transcriber(config.transcription)
         self.cleaner = LLMCleaner(config.cleanup)
         self.history = self._open_history()
-        self.profile = Profile()
-        self._profile_stale = True
         self._menu_stale = True
+        self.cleanup_item = rumps.MenuItem("Smart cleanup (Ollama)", callback=self.toggle_cleanup)
+        self.cleanup_item.state = int(config.cleanup.enabled)
+        self.pipeline = Pipeline(
+            config, self.transcriber, self.cleaner, self.history, cleanup_enabled=lambda: bool(self.cleanup_item.state)
+        )
         self.jobs: queue.Queue[Job] = queue.Queue()
         self.model_ready = False
         self.error: str | None = None
@@ -66,9 +71,7 @@ class SpeechToTextApp(rumps.App):
         self._pending_alert: str | None = None
 
         self.status_item = rumps.MenuItem("Starting…")
-        self.cleanup_item = rumps.MenuItem("Smart cleanup (Ollama)", callback=self.toggle_cleanup)
-        self.cleanup_item.state = int(config.cleanup.enabled)
-        self.recent_menu = rumps.MenuItem("Recent (click to copy)")
+        self.recent_menu = rumps.MenuItem("Recent (click to copy, ❌ to retry)")
         self.menu = [
             self.status_item,
             None,
@@ -150,100 +153,53 @@ class SpeechToTextApp(rumps.App):
 
         while True:
             job = self.jobs.get()
+            self.error = None
             try:
                 self._process(job)
-                self.error = None
             except Exception as exc:
                 log.exception("Dictation failed")
-                self.error = f"Dictation failed: {exc}"
+                self.error = str(exc) if isinstance(exc.__cause__, DictationFailed) else f"Dictation failed: {exc}"
                 if self.config.sounds:
                     play_sound("Basso")
             finally:
                 self.jobs.task_done()
 
     def _process(self, job: Job) -> None:
-        if is_silent(job.audio):
-            log.info("Recording was empty or silent; nothing to paste")
-            return
-        profile = self._current_profile()
-        vocabulary = [*self.config.cleanup.vocabulary, *profile.vocabulary]
-        # Your explicit replacements win over learned ones.
-        replacements = {**profile.replacements, **self.config.replacements}
-
-        started = time.monotonic()
-        language = self.transcriber.detect_language(job.audio)
-        prompt = whisper_prompt(language, vocabulary, profile.recent_text.get(language or "", ""))
-        raw = self.transcriber.transcribe(job.audio, language, prompt)
-        transcribe_seconds = time.monotonic() - started
-        log.info("Whisper [%s]: %r", language, raw)
-
-        text = basic_cleanup(raw, replacements, language)
-        if not text:
+        if job.retry_id is not None:
+            text = self.pipeline.retry(job.retry_id)
+            copy_text(text)
+            self.last = LastDictation(text, job.retry_id)
+            self._menu_stale = True
+            log.info("Recovered #%d: %r", job.retry_id, text)
+            if self.config.sounds:
+                play_sound("Glass")
             return
 
-        cleaned, cleanup_seconds = None, None
-        if self.cleanup_item.state:
-            started = time.monotonic()
-            cleaned = self.cleaner.clean(
-                text,
-                language=language,
-                vocabulary=profile.vocabulary,
-                corrections=profile.corrections,
-                examples=profile.examples,
-            )
-            cleanup_seconds = time.monotonic() - started
-        final = apply_replacements(cleaned, replacements) if cleaned else text
+        try:
+            outcome = self.pipeline.process(job.audio, job.app_name)
+        except DictationFailed as failure:
+            self._menu_stale = True
+            where = "Audio saved: click it under Recent to retry." if failure.history_id else ""
+            raise RuntimeError(f"Transcription failed. {where}") from failure
+        if outcome.history_id is not None:
+            self._menu_stale = True
+        if not outcome.text:
+            return
+
+        final = outcome.text
         log.info("Pasting: %r", final)
-
-        # Save before pasting, so the text survives even if the paste (or the app) fails.
-        history_id = self._save(
-            raw_text=raw,
-            final_text=final,
-            language=language,
-            app_name=job.app_name,
-            audio_seconds=len(job.audio) / SAMPLE_RATE,
-            transcribe_seconds=transcribe_seconds,
-            cleanup_seconds=cleanup_seconds,
-            cleanup_used=cleaned is not None,
-        )
-        self.last = LastDictation(final, history_id)
-
+        self.last = LastDictation(final, outcome.history_id)
         pasted = False
         try:
             pasted = paste_text(final + (" " if self.config.append_space and not final.endswith("\n") else ""))
         finally:
-            if self.history and history_id is not None:
+            if self.history and outcome.history_id is not None:
                 try:
-                    self.history.mark_pasted(history_id, pasted)
+                    self.history.set_status(outcome.history_id, "pasted" if pasted else "paste_failed")
                 except Exception:
                     log.exception("Could not record paste status")
-            self._menu_stale = True
         if not pasted:
             self.error = "Couldn't paste (grant Accessibility). Text is on your clipboard."
-
-    def _save(self, **fields) -> int | None:
-        if not self.history:
-            return None
-        try:
-            history_id = self.history.add(**fields)
-        except Exception:
-            log.exception("Could not save to history")
-            return None
-        self._profile_stale = True
-        return history_id
-
-    def _current_profile(self) -> Profile:
-        if self._profile_stale and self.history and self.config.history.learn:
-            try:
-                self.profile = build_profile(self.history)
-                log.info(
-                    "Profile: %d learned terms, %d corrections, %d examples",
-                    len(self.profile.vocabulary), len(self.profile.corrections), len(self.profile.examples),
-                )
-            except Exception:
-                log.exception("Could not build the learning profile")
-            self._profile_stale = False
-        return self.profile
 
     # --- menu bar ---
 
@@ -285,13 +241,21 @@ class SpeechToTextApp(rumps.App):
             self.recent_menu.add(rumps.MenuItem("Nothing yet" if self.history else "History is off"))
             return
         for item in items:
-            text = item.best_text
-            snippet = " ".join(text.split())
-            snippet = snippet if len(snippet) <= 60 else snippet[:59] + "…"
-            flag = "⚠️ " if item.pasted == 0 else ""
-            title = f"{item.created_at[11:16]}  {flag}{snippet}"
+            if item.status == "failed":
+                snippet, callback = "transcription failed — click to retry", self._retry_callback(item.id)
+            else:
+                snippet = " ".join(item.best_text.split())
+                snippet = snippet if len(snippet) <= 60 else snippet[:59] + "…"
+                callback = lambda _, t=item.best_text: copy_text(t)
+            title = f"{item.created_at[11:16]}  {STATUS_ICONS.get(item.status, '')}{snippet}"
             if title not in self.recent_menu:  # rumps keys items by title
-                self.recent_menu.add(rumps.MenuItem(title, callback=lambda _, t=text: copy_text(t)))
+                self.recent_menu.add(rumps.MenuItem(title, callback=callback))
+
+    def _retry_callback(self, history_id: int):
+        def retry(_item) -> None:
+            self.jobs.put(Job(None, retry_id=history_id))
+
+        return retry
 
     def toggle_cleanup(self, item) -> None:
         item.state = not item.state
@@ -324,7 +288,7 @@ class SpeechToTextApp(rumps.App):
             pairs = correction_pairs(self.last.text, corrected)
             self.history.set_correction(self.last.history_id, corrected, pairs)
             log.info("Learned corrections: %s", pairs)
-            self._profile_stale = True
+            self.pipeline.mark_profile_stale()
             self._menu_stale = True
         self.last = LastDictation(corrected, self.last.history_id)
 

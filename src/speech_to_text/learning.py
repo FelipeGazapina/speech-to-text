@@ -33,7 +33,7 @@ class Profile:
 
 
 def build_profile(store: HistoryStore, history_window: int = 500) -> Profile:
-    history = store.recent(limit=history_window)
+    history = store.recent(limit=history_window, include_unusable=False)  # skip noise and failures
     corrections = store.corrections()
 
     vocabulary: list[str] = []

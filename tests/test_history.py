@@ -13,17 +13,42 @@ def store(tmp_path):
 def test_add_recent_and_paste_status(store):
     first = store.add(raw_text="um hello", final_text="Hello.", language="en", app_name="Slack")
     second = store.add(raw_text="olá", final_text="Olá.", language="pt", audio_seconds=1.5)
-    store.mark_pasted(first, True)
-    store.mark_pasted(second, False)
+    store.set_status(first, "pasted")
+    store.set_status(second, "paste_failed")
+    noise = store.add(raw_text="Thank you.", final_text="Thank you.", status="filtered")
 
     recent = store.recent()
-    assert [t.id for t in recent] == [second, first]
-    assert recent[0].pasted == 0 and recent[1].pasted == 1
+    assert [t.id for t in recent] == [noise, second, first]
+    assert [t.status for t in recent] == ["filtered", "paste_failed", "pasted"]
+    assert [t.id for t in store.recent(include_unusable=False)] == [second, first]
+    assert [t.id for t in store.recent(status="filtered")] == [noise]
+    with pytest.raises(ValueError):
+        store.set_status(first, "bogus")
+    recent = recent[1:]
     assert recent[1].app_name == "Slack"
     assert [t.id for t in store.recent(search="hello")] == [first]
     assert [t.id for t in store.recent(language="pt")] == [second]
     assert store.language_counts() == {"en": 1, "pt": 1}
     assert store.stats()["failed_pastes"] == 1
+
+
+def test_migrates_databases_from_the_pasted_flag_era(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    db = sqlite3.connect(path)
+    db.executescript(
+        """CREATE TABLE transcriptions (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL DEFAULT '2026-01-01 10:00:00',
+               language TEXT, raw_text TEXT NOT NULL, final_text TEXT NOT NULL, corrected_text TEXT, app_name TEXT,
+               audio_seconds REAL, transcribe_seconds REAL, cleanup_seconds REAL,
+               cleanup_used INTEGER NOT NULL DEFAULT 0, pasted INTEGER);
+           INSERT INTO transcriptions (raw_text, final_text, pasted) VALUES ('a', 'A', 1), ('b', 'B', 0), ('c', 'C', NULL);"""
+    )
+    db.commit()
+    db.close()
+    store = HistoryStore(path)
+    assert [t.status for t in store.recent()] == ["saved", "paste_failed", "pasted"]
+    store.add(raw_text="d", final_text="D", status="filtered")  # new columns work
 
 
 def test_corrections_accumulate(store):

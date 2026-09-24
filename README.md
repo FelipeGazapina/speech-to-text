@@ -93,7 +93,7 @@ This creates `~/Applications/Speech to Text.app`. Open it once, grant it the sam
 | Tap **right Option** again | Stop, then transcribe, clean up and paste (*pop*) |
 | **Esc** while recording | Throw the recording away |
 | 🎙 menu → **Copy last transcription** | If the paste landed in the wrong place |
-| 🎙 menu → **Recent** | Your last 10 dictations; click one to copy it (⚠️ marks a failed paste) |
+| 🎙 menu → **Recent** | Your last 10 dictations; click one to copy it, or click a ❌ one to retry it |
 | 🎙 menu → **Fix last transcription…** | Correct what it got wrong; the fix is copied and learned |
 | 🎙 menu → **Smart cleanup** | Toggle the LLM pass on/off for this session |
 
@@ -109,16 +109,24 @@ The hotkey only fires when right Option is tapped **alone**, so ⌥-shortcuts an
 
 ## History
 
-Every dictation is stored in `~/Library/Application Support/speech-to-text/history.db`, a plain SQLite file that never leaves your Mac. Each entry records:
+**Every** dictation is stored in `~/Library/Application Support/speech-to-text/history.db`, whether or not it was pasted. It's a plain SQLite file that never leaves your Mac. Each entry records:
 
 - what Whisper heard
-- what was pasted
+- the final text
 - your correction, if you made one
 - the language
 - the app it went to
-- whether the paste worked
+- what happened to it
 
-The text is saved **before** the paste, so it survives even if the paste or the app fails.
+The text is saved **before** the paste, so it survives even if the paste or the app fails. The only recordings not saved are silent ones, where nothing was said.
+
+| Status | Menu icon | Meaning |
+|---|---|---|
+| pasted | | Pasted at your cursor |
+| paste_failed | ⚠️ | Pasting didn't work; the text was left on your clipboard |
+| filtered | 🔇 | Whisper returned something that usually means noise ("Thank you.", "Obrigado."), so it wasn't pasted, but it's saved in case you really said it |
+| failed | ❌ | Transcription itself crashed. The **audio** is kept; click it under Recent (or run `stt retry`) to transcribe it again |
+| recovered | ♻️ | A failed dictation that was retried successfully |
 
 ```bash
 stt history              # last 20 dictations
@@ -127,6 +135,8 @@ stt history --lang pt    # only Portuguese
 stt history --raw        # also show what Whisper heard before cleanup
 stt copy                 # copy the last dictation to the clipboard
 stt copy 128             # copy dictation #128
+stt history --status failed
+stt retry                # re-transcribe every failed dictation from its saved audio
 ```
 
 To stop saving, set `[history] enabled = false` in the config. To erase everything, delete `history.db`.

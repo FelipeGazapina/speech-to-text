@@ -9,6 +9,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from .config import CONFIG_PATH, load_config
+from .history import STATUSES
 from .hotkey import validate_hotkey
 
 LOG_PATH = Path.home() / "Library" / "Logs" / "speech-to-text.log"
@@ -33,6 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("-n", "--limit", type=int, default=20)
     history.add_argument("--lang", help="only this language, e.g. pt or en")
     history.add_argument("--raw", action="store_true", help="also show what Whisper heard before cleanup")
+    history.add_argument("--status", choices=STATUSES, help="only dictations with this status")
+
+    retry = commands.add_parser("retry", help="re-transcribe dictations whose transcription failed (audio was kept)")
+    retry.add_argument("id", nargs="?", type=int, help="default: every failed dictation")
 
     copy = commands.add_parser("copy", help="copy a past dictation to the clipboard (default: the last one)")
     copy.add_argument("id", nargs="?", type=int)
@@ -55,7 +60,7 @@ def main(argv: list[str] | None = None) -> None:
         print(CONFIG_PATH)
         return
     if args.command:
-        run_command(args)
+        run_command(args, config)
         return
     if sys.platform != "darwin":
         sys.exit("speech-to-text is a macOS app.")
@@ -67,18 +72,26 @@ def main(argv: list[str] | None = None) -> None:
     SpeechToTextApp(config, str(LOG_PATH)).run()
 
 
-def run_command(args: argparse.Namespace) -> None:
+_STATUS_LABELS = {
+    "paste_failed": " (paste failed)",
+    "filtered": " (filtered as noise, not pasted)",
+    "failed": " (transcription failed: run `stt retry`)",
+    "recovered": " (recovered by retry)",
+}
+
+
+def run_command(args: argparse.Namespace, config) -> None:
     from .history import HistoryStore
     from .learning import build_profile
 
     store = HistoryStore()
 
     if args.command == "history":
-        items = store.recent(args.limit, search=args.search, language=args.lang)
+        items = store.recent(args.limit, search=args.search, language=args.lang, status=args.status)
         if not items:
             print("No dictations found.")
         for item in reversed(items):  # oldest first, so the newest ends up next to your prompt
-            flags = " (paste failed)" if item.pasted == 0 else ""
+            flags = _STATUS_LABELS.get(item.status, "")
             flags += " (corrected)" if item.corrected_text else ""
             where = f" → {item.app_name}" if item.app_name else ""
             print(f"#{item.id}  {item.created_at}  [{item.language or '?'}]{where}{flags}")
@@ -88,14 +101,32 @@ def run_command(args: argparse.Namespace) -> None:
         return
 
     if args.command == "copy":
-        item = store.get(args.id) if args.id else next(iter(store.recent(1)), None)
+        item = store.get(args.id) if args.id else next(iter(store.recent(1, include_unusable=False)), None)
         if not item:
             sys.exit("No such dictation.")
-        if shutil.which("pbcopy"):
-            subprocess.run(["pbcopy"], input=item.best_text.encode(), check=True)
-            print(f"Copied #{item.id}: {item.best_text}")
-        else:
-            print(item.best_text)
+        _copy_to_clipboard(item.best_text, f"#{item.id}")
+        return
+
+    if args.command == "retry":
+        ids = [args.id] if args.id else [item.id for item in store.recent(1000, status="failed")]
+        if not ids:
+            print("No failed dictations to retry.")
+            return
+        from .cleanup import LLMCleaner
+        from .pipeline import Pipeline
+        from .transcriber import Transcriber
+
+        print("Loading the Whisper model…")
+        transcriber = Transcriber(config.transcription)
+        transcriber.load()
+        pipeline = Pipeline(config, transcriber, LLMCleaner(config.cleanup), store)
+        for history_id in ids:
+            try:
+                text = pipeline.retry(history_id)
+            except Exception as exc:
+                print(f"#{history_id}: still failing: {exc}")
+                continue
+            _copy_to_clipboard(text, f"#{history_id}")
         return
 
     if args.command == "learn":
@@ -113,7 +144,10 @@ def run_command(args: argparse.Namespace) -> None:
         stats = store.stats()
         profile = build_profile(store)
         print(f"Dictations: {stats['dictations']}  ·  ~{stats['words']} words  ·  {stats['seconds'] / 60:.0f} min of speech")
-        print(f"Failed pastes: {stats['failed_pastes']}  ·  corrected by you: {stats['corrected']}")
+        print(
+            f"Failed pastes: {stats['failed_pastes']}  ·  failed transcriptions: {stats['failed_transcriptions']}"
+            f"  ·  corrected by you: {stats['corrected']}"
+        )
         if profile.language_counts:
             total = sum(profile.language_counts.values())
             print("Languages: " + ", ".join(f"{lang} {n * 100 // total}%" for lang, n in
@@ -127,6 +161,14 @@ def run_command(args: argparse.Namespace) -> None:
         if not store.corrections():
             print("  none yet: use 'Fix last transcription…' in the menu, or stt learn WRONG RIGHT")
         return
+
+
+def _copy_to_clipboard(text: str, label: str) -> None:
+    if shutil.which("pbcopy"):
+        subprocess.run(["pbcopy"], input=text.encode(), check=True)
+        print(f"Copied {label}: {text}")
+    else:
+        print(text)
 
 
 if __name__ == "__main__":

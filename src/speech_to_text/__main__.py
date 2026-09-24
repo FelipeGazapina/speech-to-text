@@ -27,6 +27,7 @@ def setup_logging() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="stt", description="Tap a key, talk, tap again: text appears at your cursor.")
     parser.add_argument("--config-path", action="store_true", help="print the config file location and exit")
+    parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)  # used by the app build
     commands = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     history = commands.add_parser("history", help="list past dictations (newest first)")
@@ -54,7 +55,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = build_parser().parse_args(argv)
+    # parse_known_args: macOS can pass extra launch arguments when the app is opened from Finder.
+    args, _unknown = build_parser().parse_known_args(argv)
+    if args.self_test:
+        self_test()
+        return
+    first_run = not CONFIG_PATH.exists()
     config = load_config()
     if args.config_path:
         print(CONFIG_PATH)
@@ -69,7 +75,24 @@ def main(argv: list[str] | None = None) -> None:
     setup_logging()
     from .app import SpeechToTextApp
 
-    SpeechToTextApp(config, str(LOG_PATH)).run()
+    SpeechToTextApp(config, str(LOG_PATH), first_run=first_run).run()
+
+
+def self_test() -> None:
+    """Check that the packaged app contains everything it needs (run by the build, no mic or model needed)."""
+    import importlib
+
+    import mlx.core as mx
+    import numpy as np
+    from mlx_whisper.audio import log_mel_spectrogram
+    from mlx_whisper.tokenizer import get_tokenizer
+
+    for module in ("AppKit", "ApplicationServices", "Quartz", "ServiceManagement", "rumps", "sounddevice", "mlx_whisper"):
+        importlib.import_module(module)
+    mel = log_mel_spectrogram(np.zeros(16_000, dtype=np.float32))  # needs the bundled mel filters
+    tokens = get_tokenizer(True, num_languages=100, language="pt").encode("olá mundo")  # bundled vocabulary
+    print(f"mlx {mx.__version__} (metal: {mx.metal.is_available()}), mel {tuple(mel.shape)}, {len(tokens)} tokens")
+    print("self-test ok")
 
 
 _STATUS_LABELS = {

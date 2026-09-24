@@ -15,8 +15,9 @@ import numpy as np
 import rumps
 
 from .cleanup import LLMCleaner
-from .config import CONFIG_PATH, Config
+from .config import CONFIG_PATH, Config, set_top_level_value
 from .history import HistoryStore
+from .history_page import write_history_page
 from .hotkey import HotkeyListener
 from .learning import correction_pairs
 from .paster import copy_text, frontmost_app_name, paste_text
@@ -29,6 +30,33 @@ log = logging.getLogger(__name__)
 ICON_IDLE, ICON_RECORDING, ICON_WORKING, ICON_LOADING, ICON_ERROR = "🎙", "🔴", "💭", "⏳", "⚠️"
 RECENT_COUNT = 10
 STATUS_ICONS = {"paste_failed": "⚠️ ", "filtered": "🔇 ", "failed": "❌ ", "recovered": "♻️ "}
+FROZEN = getattr(sys, "frozen", False)  # running as the packaged Speech to Text.app
+HOTKEY_CHOICES = {
+    "Right Option (⌥)": "right_option",
+    "Left Option (⌥)": "left_option",
+    "Right Command (⌘)": "right_command",
+    "Right Control (⌃)": "right_control",
+    "Fn / Globe (🌐)": "fn",
+    "F18 (for remapped keys)": "f18",
+}
+CLEANUP_SETUP_TITLES = {
+    "checking": "Smart cleanup: checking…",
+    "disabled": "Smart cleanup: turned off in config",
+    "no_ollama": "Smart cleanup: install Ollama (free)…",
+    "missing_model": "Smart cleanup: model not downloaded yet",
+    "downloading": "Smart cleanup: downloading model (one time, ~2 GB)…",
+    "ready": "Smart cleanup: ready ✓",
+    "error": "Smart cleanup: setup failed (see log)",
+}
+WELCOME = (
+    "Speech to Text lives in your menu bar (🎙).\n\n"
+    "• Tap {hotkey} once to start talking, tap it again to stop. The text is pasted where your cursor is.\n"
+    "• macOS will ask for Microphone, Accessibility and Input Monitoring access: allow all three, "
+    "then choose Restart from the 🎙 menu.\n"
+    "• The first start downloads the speech model (~1.6 GB), which takes a few minutes. The icon shows ⏳ meanwhile.\n"
+    "• For smarter text (removing \"um\", applying \"no wait…\" corrections), install the free Ollama app; "
+    "the 🎙 menu has a link."
+)
 
 
 def play_sound(name: str) -> None:
@@ -49,7 +77,7 @@ class LastDictation:
 
 
 class SpeechToTextApp(rumps.App):
-    def __init__(self, config: Config, log_path: str):
+    def __init__(self, config: Config, log_path: str, first_run: bool = False):
         super().__init__("Speech to Text", title=ICON_LOADING)
         self.config = config
         self.log_path = log_path
@@ -68,10 +96,26 @@ class SpeechToTextApp(rumps.App):
         self.error: str | None = None
         self.last: LastDictation | None = None
         self.recording_started = 0.0
-        self._pending_alert: str | None = None
+        self.cleanup_state = "checking"
+        self._alerts: list[tuple[str, str]] = []
 
         self.status_item = rumps.MenuItem("Starting…")
         self.recent_menu = rumps.MenuItem("Recent (click to copy, ❌ to retry)")
+        self.setup_item = rumps.MenuItem(CLEANUP_SETUP_TITLES["checking"])
+        self.hotkey_menu = rumps.MenuItem("Hotkey")
+        for label, key in HOTKEY_CHOICES.items():
+            choice = rumps.MenuItem(label, callback=lambda _, k=key: self.change_hotkey(k))
+            choice.state = int(key == config.hotkey)
+            self.hotkey_menu.add(choice)
+        advanced = rumps.MenuItem("Advanced")
+        for item in (
+            rumps.MenuItem("Open config file", callback=lambda _: subprocess.Popen(["open", "-t", str(CONFIG_PATH)])),
+            rumps.MenuItem("Open log", callback=lambda _: subprocess.Popen(["open", self.log_path])),
+        ):
+            advanced.add(item)
+        self.login_item = rumps.MenuItem("Open at login", callback=self.toggle_login_item)
+        self.login_item.state = int(_login_item_enabled())
+
         self.menu = [
             self.status_item,
             None,
@@ -79,24 +123,33 @@ class SpeechToTextApp(rumps.App):
             rumps.MenuItem("Copy last transcription", callback=self.copy_last),
             rumps.MenuItem("Fix last transcription…", callback=self.fix_last),
             self.recent_menu,
+            rumps.MenuItem("Show all history…", callback=self.show_history),
             None,
             self.cleanup_item,
-            rumps.MenuItem("Open config", callback=lambda _: subprocess.Popen(["open", "-t", str(CONFIG_PATH)])),
-            rumps.MenuItem("Reload config", callback=self.reload),
-            rumps.MenuItem("Open log", callback=lambda _: subprocess.Popen(["open", self.log_path])),
+            self.setup_item,
+            self.hotkey_menu,
+            *([self.login_item] if FROZEN else []),
+            advanced,
             None,
+            rumps.MenuItem("Restart", callback=self.reload),
         ]
 
+        hotkey_label = next((label for label, key in HOTKEY_CHOICES.items() if key == config.hotkey), config.hotkey)
+        if first_run:
+            self._alerts.append(("Welcome to Speech to Text", WELCOME.format(hotkey=hotkey_label)))
         self._request_permissions()
         self.hotkey = HotkeyListener(config.hotkey, self.toggle_recording, self.cancel_recording)
         if not self.hotkey.start():
-            self._pending_alert = (
-                "The hotkey can't be captured yet. Give the app that launched this (e.g. Terminal) "
-                "Input Monitoring AND Accessibility access in System Settings → Privacy & Security, "
-                "then choose Reload config.\n\nYou can still use Start / stop recording from this menu."
-            )
+            who = "Speech to Text" if FROZEN else "the app that launched this (e.g. Terminal)"
+            self._alerts.append((
+                "Speech to Text needs permissions",
+                f"The hotkey can't be captured yet. In System Settings → Privacy & Security, allow {who} under "
+                "Input Monitoring AND Accessibility, then choose Restart from the 🎙 menu.\n\n"
+                "You can still use Start / stop recording from the menu meanwhile.",
+            ))
 
         threading.Thread(target=self._worker, daemon=True).start()
+        threading.Thread(target=self._setup_cleanup, daemon=True).start()
         self._timer = rumps.Timer(self._refresh, 0.25)
         self._timer.start()
 
@@ -146,10 +199,6 @@ class SpeechToTextApp(rumps.App):
             log.exception("Failed to load the Whisper model")
             self.error = f"Model failed to load: {exc}"
         self.model_ready = True
-        try:
-            self.cleaner.warm_up()
-        except Exception:
-            log.exception("Cleanup model warm-up failed")
 
         while True:
             job = self.jobs.get()
@@ -203,10 +252,33 @@ class SpeechToTextApp(rumps.App):
 
     # --- menu bar ---
 
+    def _setup_cleanup(self) -> None:
+        """Make the smart cleanup work without any Terminal commands: detect Ollama, download the model."""
+        while True:
+            try:
+                state = self.cleaner.setup_state()
+                if state == "missing_model":
+                    self.cleanup_state = "downloading"
+                    self.cleaner.download_model()
+                    state = self.cleaner.setup_state()
+                if state == "ready":
+                    self.cleaner.warm_up()
+                self.cleanup_state = state
+            except Exception:
+                log.exception("Smart cleanup setup failed")
+                self.cleanup_state = "error"
+            if self.cleanup_state in ("ready", "disabled"):
+                return
+            time.sleep(30)  # e.g. waiting for you to install or start Ollama
+
     def _refresh(self, _timer) -> None:
-        if self._pending_alert:
-            message, self._pending_alert = self._pending_alert, None
-            rumps.alert("Speech to Text needs permissions", message)
+        if self._alerts:
+            title, message = self._alerts.pop(0)
+            rumps.alert(title, message)
+        setup_title = CLEANUP_SETUP_TITLES.get(self.cleanup_state, self.cleanup_state)
+        if self.setup_item.title != setup_title:
+            self.setup_item.title = setup_title
+            self.setup_item.set_callback(self.open_ollama_download if self.cleanup_state == "no_ollama" else None)
         if self._menu_stale:
             self._menu_stale = False
             self._rebuild_recent_menu()
@@ -257,6 +329,40 @@ class SpeechToTextApp(rumps.App):
 
         return retry
 
+    def open_ollama_download(self, _item) -> None:
+        subprocess.Popen(["open", "https://ollama.com/download"])
+
+    def show_history(self, _item) -> None:
+        if not self.history:
+            rumps.alert("History is off", "Turn it on with [history] enabled = true in the config file.")
+            return
+        subprocess.Popen(["open", str(write_history_page(self.history))])
+
+    def change_hotkey(self, key: str) -> None:
+        if key == self.config.hotkey:
+            return
+        set_top_level_value("hotkey", key)
+        self.reload(None)
+
+    def toggle_login_item(self, item) -> None:
+        try:
+            from ServiceManagement import SMAppService
+
+            service = SMAppService.mainAppService()
+            if item.state:
+                ok, error = service.unregisterAndReturnError_(None)
+            else:
+                ok, error = service.registerAndReturnError_(None)
+            if not ok:
+                raise RuntimeError(error)
+        except Exception as exc:
+            log.exception("Could not change the login item")
+            rumps.alert(
+                "Couldn't change Open at login",
+                f"{exc}\n\nYou can add it yourself: System Settings → General → Login Items → +.",
+            )
+        item.state = int(_login_item_enabled())
+
     def toggle_cleanup(self, item) -> None:
         item.state = not item.state
 
@@ -293,6 +399,9 @@ class SpeechToTextApp(rumps.App):
         self.last = LastDictation(corrected, self.last.history_id)
 
     def reload(self, _item) -> None:
+        """Restart the app (picks up config changes and newly granted permissions)."""
+        if FROZEN:
+            os.execv(sys.executable, [sys.executable])
         os.execv(sys.executable, [sys.executable, "-m", "speech_to_text"])
 
     def _request_permissions(self) -> None:
@@ -311,3 +420,14 @@ class SpeechToTextApp(rumps.App):
                 log.warning("Accessibility permission missing: pasting (Cmd+V) won't work until granted")
         except Exception:
             log.exception("Accessibility check failed")
+
+
+def _login_item_enabled() -> bool:
+    if not FROZEN:
+        return False
+    try:
+        from ServiceManagement import SMAppService
+
+        return SMAppService.mainAppService().status() == 1  # SMAppServiceStatusEnabled
+    except Exception:
+        return False

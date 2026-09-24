@@ -16,6 +16,7 @@ dependencies = [
     "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
     "pyobjc-framework-Quartz; sys_platform == 'darwin'",
     "pyobjc-framework-ApplicationServices; sys_platform == 'darwin'",
+    "pyobjc-framework-ServiceManagement; sys_platform == 'darwin'",
     # Transcription: MLX on Apple Silicon (fast, uses the GPU), faster-whisper elsewhere
     "mlx-whisper; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "faster-whisper; sys_platform != 'darwin' or platform_machine != 'arm64'",

@@ -157,3 +157,18 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(DEFAULT_CONFIG_TOML)
     return parse_config(path.read_text())
+
+
+def set_top_level_value(key: str, value: str, path: Path = CONFIG_PATH) -> None:
+    """Change one top-level string setting (e.g. hotkey) in the user's file, keeping its comments."""
+    import json
+    import re
+
+    text = path.read_text() if path.exists() else DEFAULT_CONFIG_TOML
+    line = f"{key} = {json.dumps(value)}"
+    first_table = re.search(r"^\[", text, flags=re.MULTILINE)
+    top, rest = (text[: first_table.start()], text[first_table.start():]) if first_table else (text, "")
+    pattern = re.compile(rf"^{re.escape(key)}\s*=.*$", flags=re.MULTILINE)
+    top = pattern.sub(lambda _: line, top, count=1) if pattern.search(top) else f"{line}\n{top}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(top + rest)

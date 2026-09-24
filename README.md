@@ -38,52 +38,37 @@ The app lives in the menu bar. Its icon shows what it's doing:
 | ⏳ | Loading the model |
 | ⚠️ | Something failed (open the menu for details) |
 
-## Install
+## Install the app (no developer tools)
 
-You need macOS 13+ and ideally an Apple Silicon (M1–M4) Mac. Intel works too, just slower.
+🇧🇷 **Em português:** [docs/INSTALAR.md](docs/INSTALAR.md)
 
-**1. Install [uv](https://docs.astral.sh/uv/), the Python installer, and this app:**
+You need an Apple Silicon Mac (M1 or newer) with macOS 14 or later.
+
+1. **Download `SpeechToText.dmg`.** It's on the repo's **Releases** page. For the latest build, open the newest green run on the **Actions** tab, go to *Artifacts* and download **SpeechToText-dmg**, then unzip it.
+2. **Open the .dmg** and drag **Speech to Text** onto **Applications**.
+3. **Open it from Applications.** The app isn't signed with a paid Apple Developer ID, so the first time macOS says it can't verify it:
+   - Click **Done**.
+   - Go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to "Speech to Text", then confirm.
+   - You only do this once.
+4. **Allow the three permissions** macOS asks for: **Microphone**, **Accessibility** and **Input Monitoring**. If a prompt doesn't appear, turn Speech to Text on in System Settings → Privacy & Security under each of them. Then choose **Restart** from the 🎙 menu bar icon.
+5. **Wait for ⏳ to turn into 🎙.** The first start downloads the speech model (~1.6 GB).
+6. *(Recommended)* **For the smart cleanup, install [Ollama](https://ollama.com/download)**, a free app, and open it once. Speech to Text notices it and downloads its cleanup model by itself (~2 GB, one time). The 🎙 menu shows the progress.
+
+Then choose **Open at login** in the 🎙 menu, and you're done: tap **right Option**, talk, and tap again.
+
+**Updating:** download the new .dmg and replace the app in Applications. Because the app isn't signed with a Developer ID, macOS may ask for the permissions again after an update.
+
+## Install from source (developers)
 
 ```bash
-brew install uv
-git clone https://github.com/felipegazapina/speech-to-text.git
-cd speech-to-text
+brew install uv ollama
+git clone https://github.com/felipegazapina/speech-to-text.git && cd speech-to-text
 uv tool install .
-```
-
-**2. (Recommended) Install the free cleanup model:**
-
-```bash
-brew install ollama
-brew services start ollama      # keeps Ollama running in the background
-ollama pull qwen2.5:3b          # ~2 GB, one-time download
-```
-
-You can skip this step. The app still works without it and pastes the raw Whisper transcript, with filler words stripped.
-
-**3. Run it:**
-
-```bash
+brew services start ollama && ollama pull qwen2.5:3b   # optional smart cleanup
 stt
 ```
 
-On first launch it downloads the Whisper model (~1.6 GB, one time). macOS will ask for three permissions for the app you launched it from (e.g. Terminal/iTerm). Grant all three in **System Settings → Privacy & Security**:
-
-| Permission | Why |
-|---|---|
-| **Microphone** | To hear you. |
-| **Input Monitoring** | To notice the hotkey. |
-| **Accessibility** | To press ⌘V for you. |
-
-After granting them, choose **Reload config** from the 🎙 menu (or restart `stt`).
-
-**4. (Optional) Start it at login without a Terminal window:**
-
-```bash
-./scripts/make_app.sh
-```
-
-This creates `~/Applications/Speech to Text.app`. Open it once, grant it the same three permissions, then add it under **System Settings → General → Login Items**.
+`stt` runs in Terminal, so macOS asks for the permissions for your terminal app instead: Microphone, Input Monitoring and Accessibility. To build the .dmg yourself on an Apple Silicon Mac, run `packaging/build_dmg.sh`. GitHub Actions also builds it on every push (`.github/workflows/macos-app.yml`), and pushing a `v*` tag attaches it to a release.
 
 ## Use
 
@@ -94,7 +79,9 @@ This creates `~/Applications/Speech to Text.app`. Open it once, grant it the sam
 | **Esc** while recording | Throw the recording away |
 | 🎙 menu → **Copy last transcription** | If the paste landed in the wrong place |
 | 🎙 menu → **Recent** | Your last 10 dictations; click one to copy it, or click a ❌ one to retry it |
+| 🎙 menu → **Show all history…** | Your whole history as a searchable page in the browser, with copy buttons |
 | 🎙 menu → **Fix last transcription…** | Correct what it got wrong; the fix is copied and learned |
+| 🎙 menu → **Hotkey** | Pick another key (right Option, Fn/🌐, right Command…) |
 | 🎙 menu → **Smart cleanup** | Toggle the LLM pass on/off for this session |
 
 The hotkey only fires when right Option is tapped **alone**, so ⌥-shortcuts and special characters keep working.
@@ -162,7 +149,7 @@ The more you use **Fix last transcription…** when something comes out wrong, t
 
 ## Configure
 
-Run `stt --config-path` to find the file (`~/.config/speech-to-text/config.toml`), or use 🎙 → **Open config**. Every option is commented. The ones you'll most likely touch:
+Use 🎙 → **Advanced → Open config file** (it's `~/.config/speech-to-text/config.toml`). Every option is commented. The ones you'll most likely touch:
 
 ```toml
 hotkey = "right_option"   # or fn, right_command, right_control, f13…f19
@@ -184,7 +171,7 @@ learn = true              # adapt to your vocabulary, fixes and style
 "get hub" = "GitHub"
 ```
 
-Then use 🎙 → **Reload config**.
+Then use 🎙 → **Restart**. (The hotkey can also be changed from 🎙 → **Hotkey**, no file editing needed.)
 
 **Tips:**
 
@@ -193,12 +180,12 @@ Then use 🎙 → **Reload config**.
 
 ## Troubleshooting
 
-- **Nothing happens when I tap the key.** Input Monitoring isn't granted. Grant it, then Reload config.
+- **Nothing happens when I tap the key.** Input Monitoring isn't granted. Grant it, then choose Restart.
 - **It transcribes but nothing gets pasted.** Accessibility isn't granted. The text is left on your clipboard, and you can also get it from **Recent** or `stt copy`.
 - **The wrong language was detected.** Detection gets unreliable on very short clips (one or two words). If you only dictate in one language for a while, set `languages = ["pt"]` (or `["en"]`).
 - **The first dictation is slow.** The models load once at startup (⏳), and later dictations are fast.
 - **The text isn't cleaned up.** Check that Ollama is running (`ollama list`) and that you pulled the model named in the config.
-- **Where are the logs?** `~/Library/Logs/speech-to-text.log`. It includes the raw and final text of each dictation, which helps when tuning `vocabulary` and `replacements`.
+- **Where are the logs?** 🎙 → Advanced → Open log (`~/Library/Logs/speech-to-text.log`). It includes the raw and final text of each dictation, which helps when tuning `vocabulary` and `replacements`.
 
 ## Development
 

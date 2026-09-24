@@ -97,3 +97,35 @@ def test_llm_cleaner_falls_back_when_ollama_is_down():
 
 def test_llm_cleaner_disabled():
     assert LLMCleaner(CleanupConfig(enabled=False)).clean("hello") is None
+
+
+class _FakeOllamaWithoutModel(_FakeOllama):
+    pulled: list = []
+
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        models = [{"name": "qwen2.5:3b"}] if type(self).pulled else []
+        self.wfile.write(json.dumps({"models": models}).encode())
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        type(self).pulled.append(body["model"])
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'{"status": "success"}')
+
+
+def test_cleaner_downloads_its_model_through_ollama():
+    server = HTTPServer(("127.0.0.1", 0), _FakeOllamaWithoutModel)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        cleaner = LLMCleaner(CleanupConfig(ollama_url=f"http://127.0.0.1:{server.server_port}"))
+        assert cleaner.setup_state() == "missing_model"
+        cleaner.download_model()
+        assert _FakeOllamaWithoutModel.pulled == ["qwen2.5:3b"]
+        assert cleaner.setup_state() == "ready"
+    finally:
+        server.shutdown()
+    assert LLMCleaner(CleanupConfig(ollama_url="http://127.0.0.1:9")).setup_state() == "no_ollama"
+    assert LLMCleaner(CleanupConfig(enabled=False)).setup_state() == "disabled"

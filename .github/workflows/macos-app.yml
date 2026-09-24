@@ -1,0 +1,42 @@
+name: macOS app
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # to attach the .dmg to a release when a v* tag is pushed
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy pytest
+      - run: pytest -q
+
+  dmg:
+    needs: test
+    runs-on: macos-14  # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build Speech to Text.app and the .dmg
+        run: packaging/build_dmg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpeechToText-dmg
+          path: dist/SpeechToText.dmg
+          if-no-files-found: error
+      - name: Attach to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/SpeechToText.dmg

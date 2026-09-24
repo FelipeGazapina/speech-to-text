@@ -94,6 +94,35 @@ class LLMCleaner:
         if self.is_available():
             self._post({"model": self.config.model, "messages": [], "keep_alive": "30m"})
 
+    def setup_state(self) -> str:
+        """One of: disabled, no_ollama, missing_model, ready. Refreshes the cached reachability."""
+        if not self.config.enabled:
+            return "disabled"
+        self._reachable = None
+        if not self.is_available():
+            return "no_ollama"
+        return "ready" if self.has_model() else "missing_model"
+
+    def has_model(self) -> bool:
+        with urllib.request.urlopen(f"{self.config.ollama_url}/api/tags", timeout=5) as response:
+            names = {m.get("name", "") for m in json.loads(response.read()).get("models", [])}
+        wanted = self.config.model
+        return wanted in names or f"{wanted}:latest" in names
+
+    def download_model(self) -> None:
+        """Have Ollama download the cleanup model (a few GB, one time). Blocks until done."""
+        log.info("Downloading cleanup model %s through Ollama...", self.config.model)
+        request = urllib.request.Request(
+            f"{self.config.ollama_url}/api/pull",
+            data=json.dumps({"model": self.config.model, "stream": False}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=3 * 3600) as response:
+            result = json.loads(response.read())
+        if result.get("status") != "success":
+            raise RuntimeError(f"Ollama could not download {self.config.model}: {result}")
+        log.info("Cleanup model %s is ready", self.config.model)
+
     def clean(
         self,
         text: str,

@@ -136,3 +136,20 @@ def test_language_detection_is_restricted_to_configured_languages():
 def test_backend_resolution():
     assert resolve_backend("faster-whisper") == "faster-whisper"
     assert resolve_backend("auto") in {"mlx", "faster-whisper"}
+
+
+def test_set_top_level_value_keeps_the_rest_of_the_file(tmp_path):
+    from speech_to_text.config import set_top_level_value
+
+    path = tmp_path / "config.toml"
+    path.write_text(DEFAULT_CONFIG_TOML)
+    set_top_level_value("hotkey", "fn", path)
+    config = load_config(path)
+    assert config.hotkey == "fn"
+    assert config.transcription.languages == ["en", "pt"]
+    assert "Press Esc while recording" in path.read_text()
+
+    path.write_text('[cleanup]\nmodel = "gemma3:4b"\n')
+    set_top_level_value("hotkey", "f18", path)
+    config = load_config(path)
+    assert (config.hotkey, config.cleanup.model) == ("f18", "gemma3:4b")

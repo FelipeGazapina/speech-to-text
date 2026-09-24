@@ -35,6 +35,8 @@ jobs:
           python-version: "3.12"
       - name: Build Speech to Text.app and the .dmg
         run: packaging/build_dmg.sh
+      - name: Open the app like a user and check it stays running
+        run: packaging/launch_test.sh
       - uses: actions/upload-artifact@v4
         with:
           name: SpeechToText-dmg

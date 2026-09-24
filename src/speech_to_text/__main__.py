@@ -116,7 +116,8 @@ def self_test(model: str | None = None, audio_files: list[str] | None = None) ->
     from mlx_whisper.audio import log_mel_spectrogram
     from mlx_whisper.tokenizer import get_tokenizer
 
-    for module in ("AppKit", "ApplicationServices", "Quartz", "ServiceManagement", "rumps", "sounddevice", "mlx_whisper"):
+    for module in ("AppKit", "ApplicationServices", "AVFoundation", "Quartz", "ServiceManagement", "rumps",
+                   "sounddevice", "mlx_whisper"):
         importlib.import_module(module)
     mel = log_mel_spectrogram(np.zeros(16_000, dtype=np.float32))  # needs the bundled mel filters
     tokens = get_tokenizer(True, num_languages=100, language="pt").encode("olá mundo")  # bundled vocabulary

@@ -21,6 +21,7 @@ from .history_page import write_history_page
 from .hotkey import HotkeyListener
 from .learning import correction_pairs
 from .paster import copy_text, frontmost_app_name, paste_text
+from . import permissions
 from .pipeline import DictationFailed, Pipeline
 from .recorder import Recorder
 from .transcriber import Transcriber
@@ -51,8 +52,8 @@ CLEANUP_SETUP_TITLES = {
 WELCOME = (
     "Speech to Text lives in your menu bar (🎙).\n\n"
     "• Tap {hotkey} once to start talking, tap it again to stop. The text is pasted where your cursor is.\n"
-    "• macOS will ask for Microphone, Accessibility and Input Monitoring access: allow all three, "
-    "then choose Restart from the 🎙 menu.\n"
+    "• macOS will ask for Microphone, Accessibility and Input Monitoring access: allow all three. "
+    "If one is missing, the 🎙 menu shows ⚠️ with a button that opens the right settings page.\n"
     "• The first start downloads the speech model (~1.6 GB), which takes a few minutes. The icon shows ⏳ meanwhile.\n"
     "• For smarter text (removing \"um\", applying \"no wait…\" corrections), install the free Ollama app; "
     "the 🎙 menu has a link."
@@ -100,6 +101,7 @@ class SpeechToTextApp(rumps.App):
         self._alerts: list[tuple[str, str]] = []
 
         self.status_item = rumps.MenuItem("Starting…")
+        self.permission_item = rumps.MenuItem("Permissions: checking…")
         self.recent_menu = rumps.MenuItem("Recent (click to copy, ❌ to retry)")
         self.setup_item = rumps.MenuItem(CLEANUP_SETUP_TITLES["checking"])
         self.hotkey_menu = rumps.MenuItem("Hotkey")
@@ -119,6 +121,7 @@ class SpeechToTextApp(rumps.App):
 
         self.menu = [
             self.status_item,
+            self.permission_item,
             None,
             rumps.MenuItem("Start / stop recording", callback=lambda _: self.toggle_recording()),
             rumps.MenuItem("Copy last transcription", callback=self.copy_last),
@@ -138,16 +141,22 @@ class SpeechToTextApp(rumps.App):
         hotkey_label = next((label for label, key in HOTKEY_CHOICES.items() if key == config.hotkey), config.hotkey)
         if first_run:
             self._alerts.append(("Welcome to Speech to Text", WELCOME.format(hotkey=hotkey_label)))
-        self._request_permissions()
+        permissions.request_all()
+        self.missing_permissions = permissions.missing_permissions()
         self.hotkey = HotkeyListener(config.hotkey, self.toggle_recording, self.cancel_recording)
-        if not self.hotkey.start():
-            who = "Speech to Text" if FROZEN else "the app that launched this (e.g. Terminal)"
+        # macOS only delivers keys to a listener created after Input Monitoring was granted, so once
+        # it's granted while we're running, we restart by ourselves.
+        self._restart_when_listening_allowed = permissions.INPUT_MONITORING in self.missing_permissions
+        if not self.hotkey.start() and not self._restart_when_listening_allowed:
             self._alerts.append((
-                "Speech to Text needs permissions",
-                f"The hotkey can't be captured yet. In System Settings → Privacy & Security, allow {who} under "
-                "Input Monitoring AND Accessibility, then choose Restart from the 🎙 menu.\n\n"
+                "The hotkey isn't working",
+                "macOS refused to let Speech to Text watch the keyboard. Check Input Monitoring and Accessibility "
+                "in System Settings → Privacy & Security, then choose Restart from the 🎙 menu.\n\n"
                 "You can still use Start / stop recording from the menu meanwhile.",
             ))
+        if self.missing_permissions:
+            log.warning("Missing permissions: %s", ", ".join(self.missing_permissions))
+        self._ticks = 0
 
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._setup_cleanup, daemon=True).start()
@@ -168,6 +177,7 @@ class SpeechToTextApp(rumps.App):
     def toggle_recording(self) -> None:
         if self.recorder.is_recording:
             audio = self.recorder.stop()
+            log.info("Recording stopped (%.1fs)", time.monotonic() - self.recording_started)
             if self.config.sounds:
                 play_sound("Pop")
             self.jobs.put(Job(audio, frontmost_app_name()))
@@ -181,6 +191,7 @@ class SpeechToTextApp(rumps.App):
                 play_sound("Basso")
             return
         self.recording_started = time.monotonic()
+        log.info("Recording started")
         if self.config.sounds:
             play_sound("Tink")
 
@@ -272,7 +283,26 @@ class SpeechToTextApp(rumps.App):
                 return
             time.sleep(30)  # e.g. waiting for you to install or start Ollama
 
+    def _check_permissions(self) -> None:
+        self.missing_permissions = permissions.missing_permissions()
+        if self.missing_permissions:
+            first = self.missing_permissions[0]
+            title = f"⚠️ Allow {first} ({permissions.WHY[first]})…"
+            callback = lambda _, p=first: permissions.open_settings(p)  # noqa: E731
+        else:
+            title, callback = "Permissions: all set ✓", None
+        if self.permission_item.title != title:
+            self.permission_item.title = title
+            self.permission_item.set_callback(callback)
+        idle = not self.recorder.is_recording and not self.jobs.unfinished_tasks
+        if self._restart_when_listening_allowed and permissions.INPUT_MONITORING not in self.missing_permissions and idle:
+            log.info("Input Monitoring was just granted: restarting so the hotkey starts working")
+            self.reload(None)
+
     def _refresh(self, _timer) -> None:
+        self._ticks += 1
+        if self._ticks % 8 == 1:  # every 2 seconds
+            self._check_permissions()
         if self._alerts:
             title, message = self._alerts.pop(0)
             rumps.alert(title, message)
@@ -290,6 +320,8 @@ class SpeechToTextApp(rumps.App):
             title, status = f"{ICON_RECORDING} {elapsed // 60}:{elapsed % 60:02d}", f"Recording… tap {hotkey} to stop"
         elif self.jobs.unfinished_tasks and self.model_ready:
             title, status = ICON_WORKING, "Transcribing…"
+        elif self.missing_permissions:
+            title, status = ICON_ERROR, f"Needs permission: {', '.join(self.missing_permissions)} (see below)"
         elif not self.model_ready:
             title, status = ICON_LOADING, "Loading Whisper model (first run downloads it)…"
         elif self.error:
@@ -404,23 +436,6 @@ class SpeechToTextApp(rumps.App):
         if FROZEN:
             os.execv(sys.executable, [sys.executable])
         os.execv(sys.executable, [sys.executable, "-m", "speech_to_text"])
-
-    def _request_permissions(self) -> None:
-        """Trigger the macOS permission prompts up front instead of failing silently later."""
-        try:
-            import Quartz
-
-            if hasattr(Quartz, "CGRequestListenEventAccess") and not Quartz.CGPreflightListenEventAccess():
-                Quartz.CGRequestListenEventAccess()  # Input Monitoring: needed to see the hotkey
-        except Exception:
-            log.exception("Input Monitoring check failed")
-        try:
-            from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
-
-            if not AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True}):
-                log.warning("Accessibility permission missing: pasting (Cmd+V) won't work until granted")
-        except Exception:
-            log.exception("Accessibility check failed")
 
 
 def _login_item_enabled() -> bool:

@@ -180,7 +180,8 @@ Then use 🎙 → **Restart**. (The hotkey can also be changed from 🎙 → **H
 
 ## Troubleshooting
 
-- **Nothing happens when I tap the key.** Input Monitoring isn't granted. Grant it, then choose Restart.
+- **Nothing happens when I tap the key.** Input Monitoring isn't granted. The 🎙 menu shows ⚠️ with a button that opens the right settings page, and the app restarts by itself once you allow it. If Speech to Text is already switched on there but the key still does nothing (common after installing a new version), remove it with **–**, add it again with **+**, and do the same under Accessibility.
+- **The app quit or crashed.** Use 🎙 → Advanced → **Show log files in Finder** and send `speech-to-text.log` and `speech-to-text-console.log`. The console log includes native crash traces.
 - **It transcribes but nothing gets pasted.** Accessibility isn't granted. The text is left on your clipboard, and you can also get it from **Recent** or `stt copy`.
 - **The wrong language was detected.** Detection gets unreliable on very short clips (one or two words). If you only dictate in one language for a while, set `languages = ["pt"]` (or `["en"]`).
 - **The first dictation is slow.** The models load once at startup (⏳), and later dictations are fast.

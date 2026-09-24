@@ -140,3 +140,45 @@ def test_app_records_paste_result(app_module, store, monkeypatch, pasted, status
     assert store.recent()[0].status == status
     assert app.last.text == "Ship it." and app._menu_stale
     assert (app.error is None) is pasted
+
+
+class _FakeMenuItem:
+    def __init__(self):
+        self.title, self.callback = "", None
+
+    def set_callback(self, callback):
+        self.callback = callback
+
+
+def _permission_app(app_module, monkeypatch, missing, restart_pending):
+    app = app_module.SpeechToTextApp.__new__(app_module.SpeechToTextApp)
+    app.permission_item = _FakeMenuItem()
+    app.recorder = types.SimpleNamespace(is_recording=False)
+    app.jobs = types.SimpleNamespace(unfinished_tasks=0)
+    app._restart_when_listening_allowed = restart_pending
+    app.restarts = 0
+    app.reload = lambda _item: setattr(app, "restarts", app.restarts + 1)
+    monkeypatch.setattr(app_module.permissions, "missing_permissions", lambda: list(missing))
+    return app
+
+
+def test_missing_permission_is_shown_with_a_fix_button(app_module, monkeypatch):
+    opened = []
+    monkeypatch.setattr(app_module.permissions, "open_settings", opened.append)
+    app = _permission_app(app_module, monkeypatch, ["Input Monitoring"], restart_pending=True)
+    app._check_permissions()
+    assert app.permission_item.title.startswith("⚠️ Allow Input Monitoring")
+    app.permission_item.callback(None)
+    assert opened == ["Input Monitoring"] and app.restarts == 0
+
+
+def test_restarts_once_input_monitoring_is_granted(app_module, monkeypatch):
+    app = _permission_app(app_module, monkeypatch, [], restart_pending=True)
+    app._check_permissions()
+    assert app.restarts == 1 and app.permission_item.title == "Permissions: all set ✓"
+
+
+def test_no_restart_loop_when_nothing_was_pending(app_module, monkeypatch):
+    app = _permission_app(app_module, monkeypatch, [], restart_pending=False)
+    app._check_permissions()
+    assert app.restarts == 0

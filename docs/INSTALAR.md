@@ -65,3 +65,21 @@ No menu 🎙, marque **Open at login**.
 ## Atualizar
 
 Baixe o `.dmg` novo e substitua o app na pasta Aplicativos. O macOS pode pedir as permissões de novo depois de atualizar.
+
+## Se algo não funcionar
+
+**O atalho não faz nada.** Quase sempre falta a permissão de **Monitoramento de Entrada**. O menu 🎙 mostra ⚠️ e um botão **Allow Input Monitoring…**: clique nele, ative o **Speech to Text** na lista, e o app reinicia sozinho já funcionando.
+
+Se o Speech to Text já aparece ativado e mesmo assim não funciona (comum depois de atualizar o app):
+1. Selecione o Speech to Text na lista.
+2. Remova-o com o botão **–**.
+3. Adicione de novo com **+**, escolhendo o app na pasta Aplicativos.
+
+Faça o mesmo em **Acessibilidade**.
+
+**O app fechou sozinho ou travou.** Me mande os arquivos de log: menu 🎙 → **Advanced → Show log files in Finder**. Envie os arquivos `speech-to-text.log` e `speech-to-text-console.log`.
+
+Se o app nem chega a abrir:
+1. Abra o app **Console** (pelo Spotlight).
+2. Clique em **Relatórios de Falhas** na barra lateral.
+3. Procure "Speech to Text" e copie o relatório.

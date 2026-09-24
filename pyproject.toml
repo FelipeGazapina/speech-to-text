@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "speech-to-text"
-version = "0.1.0"
+version = "0.1.1"
 description = "Press a key, talk, press again: local Whisper dictation for macOS that pastes wherever your cursor is."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,6 +17,7 @@ dependencies = [
     "pyobjc-framework-Quartz; sys_platform == 'darwin'",
     "pyobjc-framework-ApplicationServices; sys_platform == 'darwin'",
     "pyobjc-framework-ServiceManagement; sys_platform == 'darwin'",
+    "pyobjc-framework-AVFoundation; sys_platform == 'darwin'",
     # Transcription: MLX on Apple Silicon (fast, uses the GPU), faster-whisper elsewhere
     "mlx-whisper; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "faster-whisper; sys_platform != 'darwin' or platform_machine != 'arm64'",

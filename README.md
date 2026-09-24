@@ -44,7 +44,7 @@ The app lives in the menu bar. Its icon shows what it's doing:
 
 You need an Apple Silicon Mac (M1 or newer) with macOS 14 or later.
 
-1. **Download `SpeechToText.dmg`.** It's on the repo's **Releases** page. For the latest build, open the newest green run on the **Actions** tab, go to *Artifacts* and download **SpeechToText-dmg**, then unzip it.
+1. **Download `SpeechToText.dmg`** from the [latest release](https://github.com/FelipeGazapina/speech-to-text/releases/latest).
 2. **Open the .dmg** and drag **Speech to Text** onto **Applications**.
 3. **Open it from Applications.** The app isn't signed with a paid Apple Developer ID, so the first time macOS says it can't verify it:
    - Click **Done**.
@@ -68,7 +68,7 @@ brew services start ollama && ollama pull qwen2.5:3b   # optional smart cleanup
 stt
 ```
 
-`stt` runs in Terminal, so macOS asks for the permissions for your terminal app instead: Microphone, Input Monitoring and Accessibility. To build the .dmg yourself on an Apple Silicon Mac, run `packaging/build_dmg.sh`. GitHub Actions also builds it on every push (`.github/workflows/macos-app.yml`), and pushing a `v*` tag attaches it to a release.
+`stt` runs in Terminal, so macOS asks for the permissions for your terminal app instead: Microphone, Input Monitoring and Accessibility. To build the .dmg yourself on an Apple Silicon Mac, run `packaging/build_dmg.sh`. GitHub Actions also builds it on every push (`.github/workflows/macos-app.yml`). When the default branch gets a version (`pyproject.toml`) that has no release yet, the workflow publishes the .dmg as release `v<version>`. So to ship an update, bump the version in `pyproject.toml` and `src/speech_to_text/__init__.py`.
 
 ## Use
 

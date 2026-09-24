@@ -4,13 +4,7 @@ Sem Terminal e sem ferramentas de desenvolvedor. Você precisa de um Mac com chi
 
 ## 1. Baixar
 
-Baixe o arquivo **`SpeechToText.dmg`** na página **Releases** do repositório.
-
-Para pegar a versão mais recente antes de sair uma Release:
-
-1. Abra a aba **Actions**.
-2. Clique na execução mais recente com ✅ verde.
-3. Em *Artifacts*, baixe **SpeechToText-dmg** e descompacte o arquivo.
+Baixe o arquivo **`SpeechToText.dmg`** da [última release](https://github.com/FelipeGazapina/speech-to-text/releases/latest).
 
 ## 2. Instalar
 

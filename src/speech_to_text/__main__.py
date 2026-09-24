@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -55,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    if getattr(sys, "frozen", False):
+        # Opened from Finder there may be no console: give progress bars somewhere harmless to write.
+        os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+        sys.stdout = sys.stdout or open(os.devnull, "w")
+        sys.stderr = sys.stderr or open(os.devnull, "w")
     # parse_known_args: macOS can pass extra launch arguments when the app is opened from Finder.
     args, _unknown = build_parser().parse_known_args(argv)
     if args.self_test:

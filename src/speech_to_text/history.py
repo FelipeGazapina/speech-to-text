@@ -74,6 +74,18 @@ class Transcription:
         return self.corrected_text or self.final_text
 
 
+@contextmanager
+def open_db(path: Path):
+    """A short-lived connection (commit on success), so every store is safe to use from any thread."""
+    db = sqlite3.connect(path, timeout=5)
+    db.row_factory = sqlite3.Row
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
+
+
 class HistoryStore:
     """Opens a short-lived connection per call, so it's safe from any thread."""
 
@@ -86,15 +98,8 @@ class HistoryStore:
             db.executescript(_SCHEMA)
             _migrate(db)
 
-    @contextmanager
     def _connect(self):
-        db = sqlite3.connect(self.path, timeout=5)
-        db.row_factory = sqlite3.Row
-        try:
-            with db:
-                yield db
-        finally:
-            db.close()
+        return open_db(self.path)
 
     # --- writing ---
 

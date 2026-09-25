@@ -55,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-model", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-audio", nargs="*", default=[], help=argparse.SUPPRESS)
+    parser.add_argument("--self-test-meeting", nargs=2, metavar=("ME_WAV", "OTHERS_WAV"), help=argparse.SUPPRESS)
     # Used by the app build: install a .dmg over a copy of the app, exactly like an in-app update.
     parser.add_argument("--self-test-update", nargs=2, metavar=("DMG", "APP"), help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command", metavar="COMMAND")
@@ -96,7 +97,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"self-test update ok: installed {dmg.name} into {app}")
         return
     if args.self_test:
-        self_test(args.self_test_model, args.self_test_audio)
+        self_test(args.self_test_model, args.self_test_audio, args.self_test_meeting)
         return
     first_run = not CONFIG_PATH.exists()
     config = load_config()
@@ -116,7 +117,40 @@ def main(argv: list[str] | None = None) -> None:
     SpeechToTextApp(config, str(LOG_PATH), first_run=first_run).run()
 
 
-def self_test(model: str | None = None, audio_files: list[str] | None = None) -> None:
+def self_test_meeting(transcriber, wavs: list[Path]) -> None:
+    """Run the Notetaker pipeline on two recordings standing in for the microphone and the computer."""
+    import tempfile
+    import time
+
+    from .meeting_audio import PcmWriter, SystemAudioCapture, _stream_output_class
+    from .meeting_notes import process_meeting
+    from .meetings import MeetingStore
+    from .pipeline import load_wav
+
+    folder = Path(tempfile.mkdtemp(prefix="stt-meeting-test-"))
+    audio_dir = folder / "audio"
+    audio_dir.mkdir()
+    for name, wav in zip(("me.pcm", "others.pcm"), wavs):
+        (load_wav(wav) * 32767).astype("<i2").tofile(audio_dir / name)
+    store = MeetingStore(folder / "history.db")
+    meeting = process_meeting(store.start(audio_dir, True), store, transcriber, None)
+    print(f"meeting [{meeting.language}]:\n{meeting.transcript_text()}")
+    if not meeting.segments or {s.speaker for s in meeting.segments} != {"me", "others"} or audio_dir.exists():
+        sys.exit("self-test: the meeting pipeline didn't produce both tracks")
+
+    # The ScreenCaptureKit glue has to load; actually recording needs a permission CI doesn't have.
+    _stream_output_class()
+    capture = SystemAudioCapture(PcmWriter(folder / "system.pcm", time.monotonic()))
+    try:
+        capture.start()
+        print("system audio capture: started")
+        capture.stop()
+    except Exception as exc:
+        print(f"system audio capture: {type(exc).__name__}: {exc}")
+    capture.writer.close()
+
+
+def self_test(model: str | None = None, audio_files: list[str] | None = None, meeting: list[str] | None = None) -> None:
     """Check that the packaged app contains everything it needs. Run by the build (no microphone needed)."""
     import importlib
 
@@ -126,7 +160,7 @@ def self_test(model: str | None = None, audio_files: list[str] | None = None) ->
     from mlx_whisper.tokenizer import get_tokenizer
 
     for module in ("AppKit", "ApplicationServices", "AVFoundation", "Quartz", "ServiceManagement", "rumps",
-                   "sounddevice", "mlx_whisper"):
+                   "sounddevice", "mlx_whisper", "ScreenCaptureKit", "CoreMedia", "WebKit"):
         importlib.import_module(module)
     mel = log_mel_spectrogram(np.zeros(16_000, dtype=np.float32))  # needs the bundled mel filters
     tokens = get_tokenizer(True, num_languages=100, language="pt").encode("olá mundo")  # bundled vocabulary
@@ -147,6 +181,8 @@ def self_test(model: str | None = None, audio_files: list[str] | None = None) ->
             print(f"{Path(path).name}: [{language}] {text}")
             if not text:
                 sys.exit(f"self-test: no text transcribed from {path}")
+        if meeting:
+            self_test_meeting(transcriber, [Path(p) for p in meeting])
     print("self-test ok")
 
 

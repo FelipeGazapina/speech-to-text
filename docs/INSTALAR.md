@@ -38,6 +38,7 @@ O macOS vai pedir três permissões. Autorize as três:
 | **Microfone** | ouvir você |
 | **Acessibilidade** | colar o texto onde está o cursor (⌘V) |
 | **Monitoramento de Entrada** | perceber quando você aperta a tecla de atalho |
+| **Gravação de Tela e Áudio do Sistema** | só para as notas de reunião: ouvir as outras pessoas da chamada (pedida na primeira reunião) |
 
 Se algum pedido não aparecer, ative o Speech to Text manualmente em **Ajustes do Sistema → Privacidade e Segurança**, em cada uma dessas seções.
 
@@ -72,6 +73,23 @@ No menu 🎙, marque **Open at login**.
   - **Show all history…**: o histórico completo, com busca.
 - **Fix last transcription…**: corrija o que saiu errado. O app aprende com a correção.
 - **Hotkey**: troque a tecla de atalho, por exemplo para a tecla 🌐 (Fn).
+
+## Notas de reunião (Notetaker)
+
+No menu 🎙, clique em **📝 Start meeting notes** quando a reunião começar e em **⏹ Stop meeting notes** quando terminar. O app grava duas coisas ao mesmo tempo:
+
+- **o seu microfone**, que aparece como "Você";
+- **o áudio do computador**, ou seja, as outras pessoas no Zoom, Meet, Teams, Slack etc., que aparece como "Outros".
+
+Ao parar, ele transcreve tudo no seu Mac, com horário e quem falou, e faz um resumo (com título, pontos principais, decisões e próximos passos) usando o Ollama. O ditado continua funcionando durante a reunião.
+
+Para ver as notas, abra **Open Speech to Text…** no menu 🎙:
+- **Notetaker:** a lista de reuniões, cada uma com o **Resumo** e a **Transcrição** original.
+- **Dictations:** o histórico de ditados, com busca.
+
+**Armazenamento:** o texto fica salvo no banco local (SQLite). O áudio **não** é guardado: ele é apagado assim que a transcrição termina.
+
+**Permissão para ouvir as outras pessoas:** na primeira reunião, o macOS pede **Gravação de Tela e Áudio do Sistema** (Screen & System Audio Recording). Autorize e reinicie o app. A tela não é gravada, só o som. Sem essa permissão, a reunião grava apenas o seu microfone, e a nota avisa isso.
 
 ## Atualizar
 

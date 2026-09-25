@@ -143,15 +143,3 @@ def test_cli_commands(tmp_path, monkeypatch, capsys):
     assert '"get hub" → "GitHub"  ×2 [auto]' in out and "pt 100%" in out
     cli.main(["unlearn", "get hub"])
     assert "Forgot 1" in capsys.readouterr().out
-
-
-def test_history_page_lists_and_escapes_everything(store):
-    from speech_to_text.history_page import render_history_page, write_history_page
-
-    store.add(raw_text="use <script> tags", final_text="Use <script> tags.", language="en", app_name="Slack")
-    store.add(raw_text="", final_text="", status="failed", audio_path="/tmp/x.wav")
-    page = render_history_page(store)
-    assert "2 dictations" in page
-    assert "Use &lt;script&gt; tags." in page and "<script> tags" not in page
-    assert "transcription failed" in page and "→ Slack" in page
-    assert write_history_page(store).read_text(encoding="utf-8") == page

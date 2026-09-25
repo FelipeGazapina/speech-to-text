@@ -22,8 +22,10 @@ afconvert -f WAVE -d LEI16@16000 -c 1 build/en.aiff build/en.wav
 if say -v Luciana -o build/pt.aiff "Abre um pull request no GitHub e roda os testes, por favor." 2>/dev/null; then
   afconvert -f WAVE -d LEI16@16000 -c 1 build/pt.aiff build/pt.wav
 fi
-"$APP/Contents/MacOS/Speech to Text" --self-test --self-test-model tiny --self-test-audio build/*.wav 2>&1 \
-  | tee build/self-test.log
+OTHERS_WAV=build/pt.wav
+[[ -f "$OTHERS_WAV" ]] || OTHERS_WAV=build/en.wav
+"$APP/Contents/MacOS/Speech to Text" --self-test --self-test-model tiny --self-test-audio build/*.wav \
+  --self-test-meeting build/en.wav "$OTHERS_WAV" 2>&1 | tee build/self-test.log
 grep -q "self-test ok" build/self-test.log
 # A helper process that re-launched the app instead of running shows up as a usage error.
 if grep -q "usage: stt" build/self-test.log; then

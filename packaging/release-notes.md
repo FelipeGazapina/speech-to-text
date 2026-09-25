@@ -15,5 +15,7 @@ Speech to Text downloads its cleanup model by itself.
 - Tap **right Option** to start dictating, tap again to paste the text at your cursor.
 - Local Whisper transcription: free, and your audio never leaves your Mac.
 - English and Portuguese, including mixed; tuned for how software engineers talk.
-- Every dictation is saved to a local history, which you can search from the menu.
+- **Meeting notes (Notetaker):** one click records you and the other people in the call, then transcribes and summarizes it on your Mac. Open them in the app window, which has **Notetaker** and **Dictations** tabs. The audio is never kept.
+- Every dictation is saved to a local history, which you can search in the app window.
+- **Updates itself** from the 🎙 menu, keeping macOS permissions (from 0.2.0 on).
 - It learns your vocabulary and the corrections you make.

@@ -7,6 +7,7 @@ import platform
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
@@ -50,6 +51,12 @@ class Transcriber:
         if self.config.model.endswith(".en"):
             self.languages = ["en"]
         self._model = None  # faster-whisper model; mlx caches its own
+        # Every model call runs on this one thread: MLX isn't safe to use from several threads, and
+        # a dictation queued behind a long meeting still gets its turn between meeting chunks.
+        self._model_thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="whisper")
+
+    def _on_model_thread(self, fn, *args, **kwargs):
+        return self._model_thread.submit(fn, *args, **kwargs).result()
 
     def model_repo(self) -> str | None:
         """The Hugging Face repo the MLX backend downloads (None for faster-whisper, which manages its own)."""
@@ -87,7 +94,10 @@ class Transcriber:
             finished.set()
 
     def load(self) -> None:
-        """Download (first run only) and load the model, then run a throwaway pass to warm it up."""
+        """Load the model, then run a throwaway pass to warm it up."""
+        self._on_model_thread(self._load)
+
+    def _load(self) -> None:
         started = time.monotonic()
         log.info("Loading Whisper model %r with %s backend...", self.config.model, self.backend)
         if self.backend == "faster-whisper":
@@ -107,7 +117,7 @@ class Transcriber:
         if len(self.languages) == 1:
             return self.languages[0]
         try:
-            probabilities = self._language_probabilities(audio)
+            probabilities = self._on_model_thread(self._language_probabilities, audio)
         except Exception:
             log.exception("Language detection failed")
             return self.languages[0] if self.languages else None
@@ -119,9 +129,36 @@ class Transcriber:
 
     def transcribe(self, audio: np.ndarray, language: str | None, prompt: str | None) -> str:
         started = time.monotonic()
-        text = self._run(audio, language=language, prompt=prompt)
+        text = self._on_model_thread(self._run, audio, language=language, prompt=prompt)
         log.info("Transcribed %.1fs of audio in %.2fs", len(audio) / SAMPLE_RATE, time.monotonic() - started)
         return text
+
+    def transcribe_segments(
+        self, audio: np.ndarray, language: str | None, prompt: str | None = None
+    ) -> list[tuple[float, float, str]]:
+        """Like transcribe(), but keeps Whisper's timing: [(start seconds, end seconds, text), ...]."""
+        return self._on_model_thread(self._run_segments, audio, language, prompt)
+
+    def _run_segments(self, audio: np.ndarray, language: str | None, prompt: str | None):
+        if self.backend == "mlx":
+            import mlx_whisper
+
+            result = mlx_whisper.transcribe(
+                audio,
+                path_or_hf_repo=_MLX_REPOS.get(self.config.model, self.config.model),
+                language=language,
+                initial_prompt=prompt,
+                condition_on_previous_text=False,
+            )
+            segments = [(s["start"], s["end"], s["text"]) for s in result.get("segments", [])]
+        else:
+            if self._model is None:
+                raise RuntimeError("Transcriber.load() must be called first")
+            found, _info = self._model.transcribe(
+                audio, language=language, initial_prompt=prompt, condition_on_previous_text=False, beam_size=5
+            )
+            segments = [(s.start, s.end, s.text) for s in found]
+        return [(float(start), float(end), text.strip()) for start, end, text in segments if text.strip()]
 
     def _language_probabilities(self, audio: np.ndarray) -> dict[str, float]:
         if self.backend == "mlx":

@@ -79,7 +79,8 @@ stt
 | **Esc** while recording | Throw the recording away |
 | 🎙 menu → **Copy last transcription** | If the paste landed in the wrong place |
 | 🎙 menu → **Recent** | Your last 10 dictations; click one to copy it, or click a ❌ one to retry it |
-| 🎙 menu → **Show all history…** | Your whole history as a searchable page in the browser, with copy buttons |
+| 🎙 menu → **📝 Start meeting notes** | Record a meeting (you + the other people); transcript and summary when you stop |
+| 🎙 menu → **Open Speech to Text…** | The app window: **Notetaker** (meetings) and **Dictations** (history) tabs |
 | 🎙 menu → **Fix last transcription…** | Correct what it got wrong; the fix is copied and learned |
 | 🎙 menu → **Hotkey** | Pick another key (right Option, Fn/🌐, right Command…) |
 | 🎙 menu → **Smart cleanup** | Toggle the LLM pass on/off for this session |
@@ -93,6 +94,28 @@ The hotkey only fires when right Option is tapped **alone**, so ⌥-shortcuts an
 - "new line", "new paragraph", "bullet point"
 - Self-corrections like "no wait…" and "scratch that"
 - The Portuguese equivalents: "ponto", "barra", "nova linha", "não, pera…", "quer dizer…"
+
+## Meeting notes (Notetaker)
+
+Click 🎙 → **📝 Start meeting notes** when a call begins, then **⏹ Stop meeting notes** when it ends. You can also use the button in the app window. Speech to Text records two tracks at once:
+
+- **your microphone**, shown as "You"/"Você";
+- **the computer's audio**, which is the other people in Zoom, Meet, Teams, Slack and so on, shown as "Others"/"Outros".
+
+When you stop, it:
+
+1. transcribes both tracks on your Mac with timestamps, skipping the silences;
+2. drops the microphone's copy of what came out of your speakers, so no lines appear twice when you're not on headphones;
+3. writes a summary with Ollama: a title, the summary, key points, decisions and action items, in the meeting's language.
+
+Dictation keeps working during a meeting. Open the notes from 🎙 → **Open Speech to Text…**:
+
+- The **Notetaker** tab lists your meetings. For each one you get the **Summary** and the original **Transcript**, and you can copy, rename, regenerate the summary or delete.
+- The **Dictations** tab is your searchable dictation history.
+
+**Storage:** the transcript and summary are saved in the same local SQLite database as your dictations. The audio is never kept: it goes to temporary files that are deleted as soon as the meeting is transcribed. If the app quits mid-meeting, what was recorded is transcribed the next time it starts.
+
+**Permission:** recording the computer's audio needs **Screen & System Audio Recording** (System Settings → Privacy & Security). macOS asks the first time; restart the app after allowing it. Nothing of your screen is recorded, only the sound. Without that permission, meetings record your microphone only, and the notes say so.
 
 ## History
 
@@ -205,4 +228,9 @@ uv venv && uv pip install -e ".[dev]"
 | `prompts.py` | Dev glossary and cleanup instructions |
 | `cleanup.py` | Filler/replacement rules and the Ollama pass |
 | `paster.py` | Clipboard, ⌘V, and restoring your clipboard |
+| `meeting_audio.py` | Meeting recording: microphone + the computer's audio (ScreenCaptureKit) to temporary files |
+| `meeting_notes.py` | Speech detection, per-track transcription, echo removal, Ollama summaries |
+| `meetings.py`, `meeting_controller.py` | Meetings in SQLite; start/stop, background processing, crash recovery |
+| `webui.py`, `web_page.py`, `window.py`, `backend.py` | The app window: a local web UI (token-protected, 127.0.0.1 only) in a native WKWebView |
+| `updater.py` | In-app updates from GitHub Releases |
 | `app.py` | The menu bar app that ties it together |

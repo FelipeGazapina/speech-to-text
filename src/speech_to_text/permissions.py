@@ -13,7 +13,10 @@ log = logging.getLogger(__name__)
 
 MICROPHONE, ACCESSIBILITY, INPUT_MONITORING = "Microphone", "Accessibility", "Input Monitoring"
 
+SCREEN_RECORDING = "Screen & System Audio Recording"  # only for meeting notes, so not in missing_permissions()
+
 _SETTINGS_PANES = {
+    SCREEN_RECORDING: "Privacy_ScreenCapture",
     MICROPHONE: "Privacy_Microphone",
     ACCESSIBILITY: "Privacy_Accessibility",
     INPUT_MONITORING: "Privacy_ListenEvent",

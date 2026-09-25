@@ -19,6 +19,9 @@ for package in ("mlx", "mlx_whisper", "sounddevice", "_sounddevice_data", "tikto
     binaries += package_binaries
     hiddenimports += package_imports
 
+# Imported lazily or by name (importlib), so PyInstaller can't see them on its own.
+hiddenimports += ["ScreenCaptureKit", "CoreMedia", "WebKit", "AVFoundation", "ServiceManagement"]
+
 a = Analysis(
     [os.path.join(SPECPATH, "launcher.py")],
     binaries=binaries,

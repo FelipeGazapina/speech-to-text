@@ -18,19 +18,26 @@ import rumps
 
 from .cleanup import LLMCleaner
 from .config import CONFIG_PATH, Config, set_top_level_value
+from .backend import AppBackend
 from .history import HistoryStore
-from .history_page import write_history_page
 from .hotkey import HotkeyListener
+from .meeting_audio import MeetingRecorder
+from .meeting_controller import MeetingController
+from .meeting_notes import Summarizer
+from .meetings import MeetingStore
 from .learning import correction_pairs
 from .paster import copy_text, frontmost_app_name, paste_text
 from . import __version__, permissions, updater
 from .pipeline import DictationFailed, Pipeline
 from .recorder import Recorder
 from .transcriber import Transcriber
+from .webui import WebUI
+from .window import AppWindow
 
 log = logging.getLogger(__name__)
 
 ICON_IDLE, ICON_RECORDING, ICON_WORKING, ICON_LOADING, ICON_ERROR = "🎙", "🔴", "💭", "⏳", "⚠️"
+ICON_MEETING = "📝"
 RECENT_COUNT = 10
 # A dictation that waited longer than this to be transcribed isn't pasted: the cursor has probably
 # moved on, and text appearing out of nowhere is worse than finding it under Recent.
@@ -108,8 +115,27 @@ class SpeechToTextApp(rumps.App):
         self.recording_started = 0.0
         self.cleanup_state = "checking"
         self._alerts: list[tuple[str, str]] = []
+        self._notes_ready: list[int] = []
+
+        # Meeting notes (the Notetaker) and the app window that shows them.
+        self.meetings = MeetingController(
+            MeetingStore(),
+            self.transcriber,
+            Summarizer(config.cleanup),
+            MeetingRecorder(),
+            is_model_ready=lambda: self.model_ready,
+            on_notes_ready=self._notes_ready.append,
+        )
+        self.meetings.resume_unfinished()
+        self.webui = WebUI(AppBackend(
+            self.meetings, self.history, copy_text, lambda: self.model_ready,
+            start_meeting=self._start_meeting, stop_meeting=self._stop_meeting,
+        ))
+        self.window = AppWindow()
+        self._meeting_hint_shown = False
 
         self.status_item = rumps.MenuItem("Starting…")
+        self.meeting_item = rumps.MenuItem(f"{ICON_MEETING} Start meeting notes", callback=self.toggle_meeting)
         self.permission_item = rumps.MenuItem("Permissions: checking…")
         self.recent_menu = rumps.MenuItem("Recent (click to copy, ❌ to retry)")
         self.setup_item = rumps.MenuItem(CLEANUP_SETUP_TITLES["checking"])
@@ -137,11 +163,13 @@ class SpeechToTextApp(rumps.App):
             self.status_item,
             self.permission_item,
             None,
+            self.meeting_item,
+            rumps.MenuItem("Open Speech to Text…", callback=lambda _: self.open_window()),
+            None,
             rumps.MenuItem("Start / stop recording", callback=lambda _: self.toggle_recording()),
             rumps.MenuItem("Copy last transcription", callback=self.copy_last),
             rumps.MenuItem("Fix last transcription…", callback=self.fix_last),
             self.recent_menu,
-            rumps.MenuItem("Show all history…", callback=self.show_history),
             None,
             self.cleanup_item,
             self.setup_item,
@@ -328,7 +356,7 @@ class SpeechToTextApp(rumps.App):
         if self.permission_item.title != title:
             self.permission_item.title = title
             self.permission_item.set_callback(callback)
-        idle = not self.recorder.is_recording and not self.jobs.unfinished_tasks
+        idle = not self.recorder.is_recording and not self.jobs.unfinished_tasks and not self.meetings.busy
         if self._restart_when_listening_allowed and permissions.INPUT_MONITORING not in self.missing_permissions and idle:
             log.info("Input Monitoring was just granted: restarting so the hotkey starts working")
             self.reload(None)
@@ -409,7 +437,7 @@ class SpeechToTextApp(rumps.App):
                 cancel="Later",
             ) == 1:
                 self._start_update()
-        idle = not self.recorder.is_recording and not self.jobs.unfinished_tasks
+        idle = not self.recorder.is_recording and not self.jobs.unfinished_tasks and not self.meetings.busy
         if self._update_ready_to_relaunch and idle:
             self._update_ready_to_relaunch = False
             app_path = updater.running_app_path()
@@ -428,6 +456,7 @@ class SpeechToTextApp(rumps.App):
 
     def _refresh(self, _timer) -> None:
         self._ticks += 1
+        self._refresh_meeting_ui()
         if FROZEN:
             self._refresh_update_ui()
         if self._ticks % 8 == 1:  # every 2 seconds
@@ -459,6 +488,12 @@ class SpeechToTextApp(rumps.App):
             title, status = f"{ICON_RECORDING} {elapsed // 60}:{elapsed % 60:02d}", f"Recording… tap {hotkey} to stop"
         elif self.jobs.unfinished_tasks and self.model_ready:
             title, status = ICON_WORKING, "Transcribing…"
+        elif self.meetings.recording:
+            elapsed = int(self.meetings.recorder.elapsed)
+            title = f"{ICON_MEETING} {elapsed // 60}:{elapsed % 60:02d}"
+            status = "Recording meeting notes (dictation still works)"
+        elif self.meetings.progress:
+            title, status = ICON_WORKING, self.meetings.progress
         elif not self.model_ready and self.download_progress and self.download_progress[1]:
             done, total = self.download_progress
             percent = min(99, done * 100 // total)
@@ -509,11 +544,60 @@ class SpeechToTextApp(rumps.App):
     def open_ollama_download(self, _item) -> None:
         subprocess.Popen(["open", "https://ollama.com/download"])
 
-    def show_history(self, _item) -> None:
-        if not self.history:
-            rumps.alert("History is off", "Turn it on with [history] enabled = true in the config file.")
-            return
-        subprocess.Popen(["open", str(write_history_page(self.history))])
+    # --- meeting notes ---
+
+    def toggle_meeting(self, _item=None) -> None:
+        # Starting talks to ScreenCaptureKit and waits for it: never on the main thread.
+        action = self._stop_meeting if self.meetings.recording else self._start_meeting
+        threading.Thread(target=action, name="meeting-toggle", daemon=True).start()
+
+    def _start_meeting(self) -> dict:
+        try:
+            result = self.meetings.start()
+        except Exception as exc:
+            log.exception("Couldn't start the meeting recording")
+            self._alerts.append(("Couldn't start the meeting notes", str(exc)))
+            if self.config.sounds:
+                play_sound("Basso")
+            return {"message": f"Couldn't start: {exc}"}
+        if self.config.sounds:
+            play_sound("Tink")
+        if result.get("system_audio") is False and not self._meeting_hint_shown:
+            self._meeting_hint_shown = True
+            self._alerts.append((
+                "Recording your microphone only",
+                "To also record the other people (the computer's audio), allow Speech to Text under "
+                "Screen & System Audio Recording in System Settings → Privacy & Security, then restart the app. "
+                "Nothing of your screen is recorded: only the sound.",
+            ))
+            permissions.open_settings(permissions.SCREEN_RECORDING)
+        return result
+
+    def _stop_meeting(self) -> dict:
+        result = self.meetings.stop()
+        if result and self.config.sounds:
+            play_sound("Pop")
+        return result
+
+    def open_window(self, meeting_id: int | None = None) -> None:
+        url = self.webui.start()
+        self.window.show(url + (f"&meeting={meeting_id}" if meeting_id else ""))
+
+    def _refresh_meeting_ui(self) -> None:
+        if self.meetings.recording:
+            elapsed = int(self.meetings.recorder.elapsed)
+            title = f"⏹ Stop meeting notes ({elapsed // 60}:{elapsed % 60:02d})"
+        else:
+            title = f"{ICON_MEETING} Start meeting notes"
+        if self.meeting_item.title != title:
+            self.meeting_item.title = title
+        if self._notes_ready:
+            meeting_id = self._notes_ready.pop(0)
+            meeting = self.meetings.store.get(meeting_id)
+            name = meeting.display_title if meeting else "Your meeting"
+            if rumps.alert("Meeting notes ready", f"“{name}” is transcribed and summarized.",
+                           ok="Open notes", cancel="Later") == 1:
+                self.open_window(meeting_id)
 
     def change_hotkey(self, key: str) -> None:
         if key == self.config.hotkey:

@@ -155,6 +155,7 @@ def _permission_app(app_module, monkeypatch, missing, restart_pending):
     app.permission_item = _FakeMenuItem()
     app.recorder = types.SimpleNamespace(is_recording=False)
     app.jobs = types.SimpleNamespace(unfinished_tasks=0)
+    app.meetings = types.SimpleNamespace(busy=False)
     app._restart_when_listening_allowed = restart_pending
     app.restarts = 0
     app.reload = lambda _item: setattr(app, "restarts", app.restarts + 1)

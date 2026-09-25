@@ -204,6 +204,10 @@ Then use 🎙 → **Restart**. (The hotkey can also be changed from 🎙 → **H
 ## Troubleshooting
 
 - **Nothing happens when I tap the key.** Input Monitoring isn't granted. The 🎙 menu shows ⚠️ with a button that opens the right settings page, and the app restarts by itself once you allow it. If Speech to Text is already switched on there but the key still does nothing (common after installing a new version), remove it with **–**, add it again with **+**, and do the same under Accessibility.
+- **The app froze.** It protects itself:
+  - Starting the microphone has a deadline, and stopping it never waits on the audio system.
+  - A transcription that doesn't finish in time is saved under Recent (❌, click to retry), and the model restarts.
+  - If the app stops responding for 45 seconds anyway, it saves the recording in progress, notes where it was stuck in the log, and restarts itself.
 - **The app quit or crashed.** Use 🎙 → Advanced → **Show log files in Finder** and send `speech-to-text.log` and `speech-to-text-console.log`. The console log includes native crash traces.
 - **It transcribes but nothing gets pasted.** Accessibility isn't granted. The text is left on your clipboard, and you can also get it from **Recent** or `stt copy`.
 - **The wrong language was detected.** Detection gets unreliable on very short clips (one or two words). If you only dictate in one language for a while, set `languages = ["pt"]` (or `["en"]`).

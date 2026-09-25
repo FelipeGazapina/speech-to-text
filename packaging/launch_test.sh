@@ -36,5 +36,9 @@ if [[ -z "$PID" ]]; then
   echo "launch test: the app is NOT running anymore" >&2
   exit 1
 fi
+if grep -qE "Frozen for|Menu bar refresh failed" "$LOG"; then
+  echo "launch test: the watchdog fired or the menu bar refresh failed (see the log above)" >&2
+  exit 1
+fi
 echo "launch test: app still running (pid $PID)"
 kill "$PID"

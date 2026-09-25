@@ -111,6 +111,11 @@ Faça o mesmo em **Acessibilidade**.
 - Aparece ⚠️ **Allow Accessibility…**? Sem essa permissão o app não consegue colar. O texto fica na área de transferência: é só apertar ⌘V.
 - Tudo o que você ditou fica em **Recent** e em **Show all history…**.
 
+**O app travou.** Ele se protege:
+- Ligar o microfone tem prazo, e desligar nunca fica esperando o sistema de áudio.
+- Uma transcrição que não termina a tempo fica salva em **Recent** (❌, clique para tentar de novo), e o modelo é reiniciado.
+- Se mesmo assim o app ficar 45 segundos sem responder, ele salva a gravação em andamento, registra no log onde travou e reinicia sozinho, avisando o que aconteceu.
+
 **O app fechou sozinho ou travou.** Me mande os arquivos de log: menu 🎙 → **Advanced → Show log files in Finder**. Envie os arquivos `speech-to-text.log` e `speech-to-text-console.log`.
 
 Se o app nem chega a abrir:

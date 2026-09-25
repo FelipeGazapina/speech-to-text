@@ -21,8 +21,9 @@ from pathlib import Path
 
 import numpy as np
 
-from .recorder import resample
+from .recorder import close_stream, resample
 from .transcriber import SAMPLE_RATE
+from .watchdog import Timeout, run_with_timeout
 
 log = logging.getLogger(__name__)
 
@@ -81,18 +82,21 @@ class MicCapture:
             mono = indata[:, 0]
             self.writer.write(mono if self._rate == SAMPLE_RATE else resample(mono, self._rate, SAMPLE_RATE))
 
-        try:
-            self._stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", callback=on_audio)
-        except sd.PortAudioError:
-            self._rate = int(sd.query_devices(kind="input")["default_samplerate"])
-            self._stream = sd.InputStream(samplerate=self._rate, channels=1, dtype="float32", callback=on_audio)
-        self._stream.start()
+        def open_stream():
+            try:
+                stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", callback=on_audio)
+            except sd.PortAudioError:
+                self._rate = int(sd.query_devices(kind="input")["default_samplerate"])
+                stream = sd.InputStream(samplerate=self._rate, channels=1, dtype="float32", callback=on_audio)
+            stream.start()
+            return stream
+
+        self._stream = run_with_timeout(open_stream, 5, "Opening the microphone")
 
     def stop(self) -> None:
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            threading.Thread(target=close_stream, args=(stream, "meeting microphone"), daemon=True).start()
 
 
 # --- the computer's audio, through ScreenCaptureKit ---
@@ -326,11 +330,14 @@ class MeetingRecorder:
         return self.system_audio
 
     def stop(self) -> float:
-        """Stop recording; returns the duration in seconds. The files stay for transcription."""
+        """Stop recording; returns the duration in seconds. The files stay for transcription.
+        Each track gets a deadline to stop, so a stuck audio device can't hang the app."""
         duration = self.elapsed
         for capture in self._captures:
             try:
-                capture.stop()
+                run_with_timeout(capture.stop, 20, f"Stopping {type(capture).__name__}")
+            except Timeout:
+                pass  # already logged; the audio written so far is kept
             except Exception:
                 log.exception("Stopping a meeting track failed")
         for writer in self._writers:

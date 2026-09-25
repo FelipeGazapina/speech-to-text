@@ -116,6 +116,12 @@ class Pipeline:
         )
         return Outcome(history_id, transcript.text, status)
 
+    def rescue(self, audio: np.ndarray, reason: str) -> int | None:
+        """Keep a recording that couldn't be processed normally (e.g. the app froze) for a later retry."""
+        if is_silent(audio):
+            return None
+        return self._save_failed(audio, None, RuntimeError(reason))
+
     def retry(self, history_id: int) -> str:
         """Re-transcribe a failed dictation from its saved audio. Returns the text."""
         if not self.history:

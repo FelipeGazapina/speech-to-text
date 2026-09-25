@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
@@ -17,7 +18,7 @@ import numpy as np
 import rumps
 
 from .cleanup import LLMCleaner
-from .config import CONFIG_PATH, Config, set_top_level_value
+from .config import CONFIG_PATH, DATA_DIR, Config, set_top_level_value
 from .backend import AppBackend
 from .history import HistoryStore
 from .hotkey import HotkeyListener
@@ -31,6 +32,7 @@ from . import __version__, permissions, updater
 from .pipeline import DictationFailed, Pipeline
 from .recorder import Recorder
 from .transcriber import Transcriber
+from .watchdog import MainThreadWatchdog, Timeout
 from .webui import WebUI
 from .window import AppWindow
 
@@ -42,6 +44,10 @@ RECENT_COUNT = 10
 # A dictation that waited longer than this to be transcribed isn't pasted: the cursor has probably
 # moved on, and text appearing out of nowhere is worse than finding it under Recent.
 LATE_PASTE_SECONDS = 20
+# If the main thread (menu bar, hotkey) doesn't respond for this long, the app saves any recording in
+# progress and restarts itself.
+FREEZE_LIMIT_SECONDS = 45
+FREEZE_MARKER = "last-freeze.json"
 STATUS_ICONS = {"paste_failed": "⚠️ ", "filtered": "🔇 ", "failed": "❌ ", "recovered": "♻️ "}
 FROZEN = getattr(sys, "frozen", False)  # running as the packaged Speech to Text.app
 HOTKEY_CHOICES = {
@@ -115,6 +121,8 @@ class SpeechToTextApp(rumps.App):
         self.recording_started = 0.0
         self.cleanup_state = "checking"
         self._alerts: list[tuple[str, str]] = []
+        self._restart_suggestion: tuple[str, str] | None = None
+        self._refresh_errors: set[str] = set()
         self._notes_ready: list[int] = []
 
         # Meeting notes (the Notetaker) and the app window that shows them.
@@ -206,6 +214,27 @@ class SpeechToTextApp(rumps.App):
             threading.Thread(target=self._update_loop, daemon=True).start()
         self._timer = rumps.Timer(self._refresh, 0.25)
         self._timer.start()
+        # App Nap would slow a menu-bar-only app's timers (and its hotkey) while it sits in the background;
+        # that would also look like a freeze to the watchdog.
+        try:
+            from Foundation import NSActivityUserInitiatedAllowingIdleSystemSleep, NSProcessInfo
+
+            self._no_app_nap = NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
+                NSActivityUserInitiatedAllowingIdleSystemSleep, "Listening for the dictation hotkey"
+            )
+        except Exception:
+            log.exception("Couldn't opt out of App Nap")
+        # The watchdog's heartbeat runs in every run loop mode, so an open menu or alert isn't a "freeze".
+        self.watchdog = MainThreadWatchdog(self._recover_from_freeze, limit=FREEZE_LIMIT_SECONDS).start()
+        self._heartbeat = rumps.Timer(self.watchdog.beat, 1.0)
+        self._heartbeat.start()
+        try:
+            from Foundation import NSRunLoop, NSRunLoopCommonModes
+
+            NSRunLoop.currentRunLoop().addTimer_forMode_(self._heartbeat._nstimer, NSRunLoopCommonModes)
+        except Exception:
+            log.exception("Couldn't schedule the watchdog heartbeat in all run loop modes")
+        self._announce_previous_freeze()
 
     def _open_history(self) -> HistoryStore | None:
         if not self.config.history.enabled:
@@ -234,6 +263,16 @@ class SpeechToTextApp(rumps.App):
             return
         try:
             self.recorder.start()
+        except Timeout:
+            self.error = "The microphone didn't respond. Try again, or restart the app."
+            self._restart_suggestion = (
+                "The microphone isn't responding",
+                "macOS's audio system didn't answer in time (this can happen when a Bluetooth headset "
+                "connects or switches modes). Restarting Speech to Text usually fixes it.",
+            )
+            if self.config.sounds:
+                play_sound("Basso")
+            return
         except Exception as exc:
             log.exception("Could not start recording")
             self.error = f"Microphone error: {exc}"
@@ -275,6 +314,12 @@ class SpeechToTextApp(rumps.App):
             except Exception as exc:
                 log.exception("Dictation failed")
                 self.error = str(exc) if isinstance(exc.__cause__, DictationFailed) else f"Dictation failed: {exc}"
+                if self.transcriber.timeouts >= 2:
+                    self._restart_suggestion = (
+                        "Transcription keeps timing out",
+                        "Your recordings are saved under Recent (❌) so nothing is lost. Restarting Speech to "
+                        "Text usually clears this; after the restart, click them to transcribe them.",
+                    )
                 if self.config.sounds:
                     play_sound("Basso")
             finally:
@@ -455,15 +500,33 @@ class SpeechToTextApp(rumps.App):
             self.update_item.set_callback(callback)
 
     def _refresh(self, _timer) -> None:
+        """Runs 4x a second on the main thread. Each part is isolated, so one failing (and logging)
+        can never stop the icon and menu from updating."""
         self._ticks += 1
-        self._refresh_meeting_ui()
+        sections = [self._refresh_meeting_ui, self._show_pending_alerts, self._refresh_menu_items,
+                    self._refresh_status]
         if FROZEN:
-            self._refresh_update_ui()
+            sections.insert(1, self._refresh_update_ui)
         if self._ticks % 8 == 1:  # every 2 seconds
-            self._check_permissions()
+            sections.insert(0, self._check_permissions)
+        for section in sections:
+            try:
+                section()
+            except Exception as exc:
+                key = f"{section.__name__}: {exc}"
+                if key not in self._refresh_errors:  # log each distinct problem once
+                    self._refresh_errors.add(key)
+                    log.exception("Menu bar refresh failed in %s", section.__name__)
+
+    def _show_pending_alerts(self) -> None:
         if self._alerts:
             title, message = self._alerts.pop(0)
             rumps.alert(title, message)
+        if self._restart_suggestion:
+            title, message = self._restart_suggestion
+            self._restart_suggestion = None
+            if rumps.alert(title, message, ok="Restart now", cancel="Later") == 1:
+                self.reload(None)
         if self._paste_help_pending and not self._paste_help_shown:
             self._paste_help_pending, self._paste_help_shown = False, True
             if rumps.alert(
@@ -474,6 +537,8 @@ class SpeechToTextApp(rumps.App):
                 cancel="Later",
             ) == 1:
                 permissions.open_settings(permissions.ACCESSIBILITY)
+
+    def _refresh_menu_items(self) -> None:
         setup_title = CLEANUP_SETUP_TITLES.get(self.cleanup_state, self.cleanup_state)
         if self.setup_item.title != setup_title:
             self.setup_item.title = setup_title
@@ -482,6 +547,7 @@ class SpeechToTextApp(rumps.App):
             self._menu_stale = False
             self._rebuild_recent_menu()
 
+    def _refresh_status(self) -> None:
         hotkey = self.config.hotkey.replace("_", " ")
         if self.recorder.is_recording:
             elapsed = int(time.monotonic() - self.recording_started)
@@ -543,6 +609,53 @@ class SpeechToTextApp(rumps.App):
 
     def open_ollama_download(self, _item) -> None:
         subprocess.Popen(["open", "https://ollama.com/download"])
+
+    # --- recovering from freezes ---
+
+    def _recover_from_freeze(self, frozen_seconds: float) -> None:
+        """Runs on the watchdog thread when the main thread stopped responding: keep what can be kept,
+        leave a note for the next launch, and restart."""
+        import faulthandler
+
+        log.error("Frozen for %.0fs: saving any recording and restarting. Where every thread was:", frozen_seconds)
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)  # the console log, when packaged
+        rescued = None
+        if self.recorder.is_recording:
+            try:
+                rescued = self.pipeline.rescue(self.recorder.snapshot(), "The app froze while you were recording")
+            except Exception:
+                log.exception("Couldn't save the recording in progress")
+        note = {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "frozen_seconds": round(frozen_seconds),
+                "rescued_dictation": rescued, "meeting": self.meetings.current_id}
+        try:
+            (DATA_DIR / FREEZE_MARKER).write_text(json.dumps(note))
+        except OSError:
+            log.exception("Couldn't write the freeze note")
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        app_path = updater.running_app_path()
+        if app_path:
+            updater.relaunch(app_path)
+        else:
+            subprocess.Popen([sys.executable, "-m", "speech_to_text"], start_new_session=True)
+        os._exit(3)
+
+    def _announce_previous_freeze(self) -> None:
+        marker = DATA_DIR / FREEZE_MARKER
+        if not marker.exists():
+            return
+        try:
+            note = json.loads(marker.read_text())
+        except (OSError, ValueError):
+            note = {}
+        marker.unlink(missing_ok=True)
+        parts = ["Speech to Text stopped responding, so it restarted itself."]
+        if note.get("rescued_dictation"):
+            parts.append("What you were dictating was saved: it's under Recent with ❌. Click it to transcribe it.")
+        if note.get("meeting"):
+            parts.append("The meeting you were recording is being transcribed from everything captured until then.")
+        parts.append("Details are in the log (Advanced → Show log files in Finder), if you want to report it.")
+        self._alerts.append(("Speech to Text recovered from a freeze", "\n\n".join(parts)))
 
     # --- meeting notes ---
 

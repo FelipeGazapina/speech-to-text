@@ -7,9 +7,11 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import rumps
@@ -21,7 +23,7 @@ from .history_page import write_history_page
 from .hotkey import HotkeyListener
 from .learning import correction_pairs
 from .paster import copy_text, frontmost_app_name, paste_text
-from . import permissions
+from . import __version__, permissions, updater
 from .pipeline import DictationFailed, Pipeline
 from .recorder import Recorder
 from .transcriber import Transcriber
@@ -124,6 +126,11 @@ class SpeechToTextApp(rumps.App):
         ):
             advanced.add(item)
         self.login_item = rumps.MenuItem("Open at login", callback=self.toggle_login_item)
+        self.update_item = rumps.MenuItem("Check for updates", callback=self.check_for_updates)
+        self.available_update: updater.Update | None = None
+        self.update_status: str | None = None  # shown on the update menu item while downloading
+        self._update_prompt: updater.Update | None = None
+        self._update_ready_to_relaunch = False
         self.login_item.state = int(_login_item_enabled())
 
         self.menu = [
@@ -139,7 +146,7 @@ class SpeechToTextApp(rumps.App):
             self.cleanup_item,
             self.setup_item,
             self.hotkey_menu,
-            *([self.login_item] if FROZEN else []),
+            *([self.login_item, self.update_item] if FROZEN else []),
             advanced,
             None,
             rumps.MenuItem("Restart", callback=self.reload),
@@ -167,6 +174,8 @@ class SpeechToTextApp(rumps.App):
 
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._setup_cleanup, daemon=True).start()
+        if FROZEN:
+            threading.Thread(target=self._update_loop, daemon=True).start()
         self._timer = rumps.Timer(self._refresh, 0.25)
         self._timer.start()
 
@@ -324,8 +333,103 @@ class SpeechToTextApp(rumps.App):
             log.info("Input Monitoring was just granted: restarting so the hotkey starts working")
             self.reload(None)
 
+    # --- updates ---
+
+    def _update_loop(self) -> None:
+        """Look for a new release a minute after launch, then every 6 hours."""
+        time.sleep(60)
+        while True:
+            self._look_for_update(announce=True)
+            time.sleep(6 * 3600)
+
+    def _look_for_update(self, announce: bool) -> None:
+        try:
+            update = updater.check_for_update(__version__)
+        except Exception:
+            log.warning("Couldn't check for updates", exc_info=True)
+            return
+        if update and (not self.available_update or update.version != self.available_update.version):
+            log.info("Update available: v%s", update.version)
+            self.available_update = update
+            if announce:
+                self._update_prompt = update
+
+    def check_for_updates(self, _item) -> None:
+        if self.available_update:
+            self._start_update()
+            return
+
+        def check() -> None:
+            self.update_status = "Checking for updates…"
+            self._look_for_update(announce=False)
+            self.update_status = None
+            if self.available_update:
+                self._update_prompt = self.available_update
+            else:
+                self._alerts.append(("You're up to date", f"Speech to Text {__version__} is the latest version."))
+
+        threading.Thread(target=check, daemon=True).start()
+
+    def _start_update(self) -> None:
+        update, app_path = self.available_update, updater.running_app_path()
+        if not update or not app_path or self.update_status:
+            return
+
+        def run() -> None:
+            try:
+                with tempfile.TemporaryDirectory(prefix="stt-download-") as folder:
+                    def progress(done: int, total: int) -> None:
+                        percent = f" {done * 100 // total}%" if total else ""
+                        self.update_status = f"Downloading v{update.version}…{percent}"
+
+                    dmg = updater.download(update, Path(folder), progress)
+                    self.update_status = f"Installing v{update.version}…"
+                    updater.install_from_dmg(dmg, app_path)
+                self.update_status = f"Restarting into v{update.version}…"
+                self._update_ready_to_relaunch = True
+            except Exception as exc:
+                log.exception("Update failed")
+                self.update_status = None
+                self._alerts.append((
+                    "The update didn't work",
+                    f"{exc}\n\nYou can download it yourself from the release page, which will open now.",
+                ))
+                subprocess.Popen(["open", update.notes_url or f"https://github.com/{updater.REPO}/releases/latest"])
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _refresh_update_ui(self) -> None:
+        if self._update_prompt:
+            update, self._update_prompt = self._update_prompt, None
+            if rumps.alert(
+                f"Speech to Text {update.version} is available",
+                f"You have {__version__}. Update now? It downloads in the background (~150 MB) and the app "
+                "restarts by itself. Your history, settings and permissions stay as they are.",
+                ok="Update",
+                cancel="Later",
+            ) == 1:
+                self._start_update()
+        idle = not self.recorder.is_recording and not self.jobs.unfinished_tasks
+        if self._update_ready_to_relaunch and idle:
+            self._update_ready_to_relaunch = False
+            app_path = updater.running_app_path()
+            if app_path:
+                updater.relaunch(app_path)
+            rumps.quit_application()
+        if self.update_status:
+            title, callback = self.update_status, None
+        elif self.available_update:
+            title, callback = f"⬆️ Update to v{self.available_update.version}", self.check_for_updates
+        else:
+            title, callback = f"Check for updates (v{__version__})", self.check_for_updates
+        if self.update_item.title != title:
+            self.update_item.title = title
+            self.update_item.set_callback(callback)
+
     def _refresh(self, _timer) -> None:
         self._ticks += 1
+        if FROZEN:
+            self._refresh_update_ui()
         if self._ticks % 8 == 1:  # every 2 seconds
             self._check_permissions()
         if self._alerts:

@@ -35,6 +35,9 @@ jobs:
           python-version: "3.12"
       - name: Build Speech to Text.app and the .dmg
         run: packaging/build_dmg.sh
+        env:
+          SIGNING_CERTIFICATE_PEM: ${{ secrets.SIGNING_CERTIFICATE_PEM }}
+          GH_TOKEN: ${{ github.token }}
       - name: Open the app like a user and check it stays running
         run: packaging/launch_test.sh
       - uses: actions/upload-artifact@v4
@@ -49,7 +52,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          SIGNING_CERTIFICATE_PEM: ${{ secrets.SIGNING_CERTIFICATE_PEM }}
         run: |
+          if [ -z "$SIGNING_CERTIFICATE_PEM" ]; then
+            echo "::warning::Not publishing a release: the SIGNING_CERTIFICATE_PEM secret is missing, and a release signed with a throwaway certificate would make macOS forget the app's permissions."
+            exit 0
+          fi
           VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           if gh release view "v$VERSION" >/dev/null 2>&1; then
             echo "v$VERSION is already released"

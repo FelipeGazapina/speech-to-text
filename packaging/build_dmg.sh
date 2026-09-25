@@ -14,8 +14,8 @@ iconutil -c icns build/icon.iconset -o build/icon.icns
 python3 -m PyInstaller --noconfirm --clean --distpath dist --workpath build/pyinstaller packaging/SpeechToText.spec
 
 APP="dist/Speech to Text.app"
-# Ad-hoc signature: required for Apple Silicon to run it at all. (Not notarized: see README.)
-codesign --force --deep --sign - "$APP"
+# Signed with the project's certificate so updates keep macOS permissions. (Not notarized: see README.)
+packaging/sign_app.sh "$APP"
 # Speak two sentences with macOS voices and transcribe them inside the packaged app.
 say -o build/en.aiff "Please open a pull request on GitHub and run the tests."
 afconvert -f WAVE -d LEI16@16000 -c 1 build/en.aiff build/en.wav
@@ -35,4 +35,10 @@ mkdir -p build/dmg
 cp -R "$APP" build/dmg/
 ln -s /Applications build/dmg/Applications
 hdiutil create -volname "Speech to Text" -srcfolder build/dmg -ov -format UDZO dist/SpeechToText.dmg
+
+# Install the .dmg over a copy of the app, exactly like the in-app updater does (mount, verify the
+# signature matches, swap), so a release that couldn't update itself never ships.
+mkdir -p build/update-test
+ditto "$APP" "build/update-test/Speech to Text.app"
+"$APP/Contents/MacOS/Speech to Text" --self-test-update dist/SpeechToText.dmg "$PWD/build/update-test/Speech to Text.app"
 echo "Built dist/SpeechToText.dmg ($(du -h dist/SpeechToText.dmg | cut -f1))"

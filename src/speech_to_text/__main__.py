@@ -55,6 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-model", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-audio", nargs="*", default=[], help=argparse.SUPPRESS)
+    # Used by the app build: install a .dmg over a copy of the app, exactly like an in-app update.
+    parser.add_argument("--self-test-update", nargs=2, metavar=("DMG", "APP"), help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     history = commands.add_parser("history", help="list past dictations (newest first)")
@@ -82,10 +84,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    if getattr(sys, "frozen", False) and "--self-test" not in (argv or sys.argv):
+    if getattr(sys, "frozen", False) and not any(a.startswith("--self-test") for a in (argv or sys.argv)):
         capture_console_output()
     # parse_known_args: macOS can pass extra launch arguments when the app is opened from Finder.
     args, _unknown = build_parser().parse_known_args(argv)
+    if args.self_test_update:
+        from .updater import install_from_dmg
+
+        dmg, app = map(Path, args.self_test_update)
+        install_from_dmg(dmg, app)
+        print(f"self-test update ok: installed {dmg.name} into {app}")
+        return
     if args.self_test:
         self_test(args.self_test_model, args.self_test_audio)
         return

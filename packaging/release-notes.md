@@ -3,8 +3,9 @@ Requires a Mac with Apple silicon (M1 or newer) and macOS 14 or later.
 
 🇧🇷 **Guia de instalação em português:** [docs/INSTALAR.md](https://github.com/FelipeGazapina/speech-to-text/blob/claude/mac-speech-to-text-eypfm6/docs/INSTALAR.md)
 
-**First launch:** the app isn't signed with a paid Apple Developer ID, so macOS blocks it the first time. Go to
-**System Settings → Privacy & Security → Open Anyway**. Then allow **Microphone**, **Accessibility** and
+**First launch:** the app isn't signed with a paid Apple Developer ID, so macOS shows *"Speech to Text" Not Opened*.
+Click **Done** (not *Move to Trash*), then go to **System Settings → Privacy & Security**, scroll to **Security** and
+click **Open Anyway**. Or run `xattr -dr com.apple.quarantine "/Applications/Speech to Text.app"` in Terminal once. Then allow **Microphone**, **Accessibility** and
 **Input Monitoring**, and choose **Restart** from the 🎙 menu bar icon. The first start downloads the speech model (~1.6 GB).
 
 **Smart cleanup (optional):** install the free [Ollama](https://ollama.com/download) app and open it once.

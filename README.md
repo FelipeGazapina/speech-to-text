@@ -46,10 +46,10 @@ You need an Apple Silicon Mac (M1 or newer) with macOS 14 or later.
 
 1. **Download `SpeechToText.dmg`** from the [latest release](https://github.com/FelipeGazapina/speech-to-text/releases/latest).
 2. **Open the .dmg** and drag **Speech to Text** onto **Applications**.
-3. **Open it from Applications.** The app isn't signed with a paid Apple Developer ID, so the first time macOS says it can't verify it:
-   - Click **Done**.
-   - Go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to "Speech to Text", then confirm.
-   - You only do this once.
+3. **Open it from Applications.** The app isn't signed with a paid Apple Developer ID, so the first time macOS shows *"Speech to Text" Not Opened*. That's Gatekeeper, not a crash.
+   - Click **Done** (not *Move to Trash*).
+   - Go to **System Settings → Privacy & Security**, scroll to **Security** and click **Open Anyway** next to "Speech to Text". Confirm with your password. The button only shows for about an hour after the blocked attempt.
+   - Or, in Terminal, run `xattr -dr com.apple.quarantine "/Applications/Speech to Text.app"` once.
 4. **Allow the three permissions** macOS asks for: **Microphone**, **Accessibility** and **Input Monitoring**. If a prompt doesn't appear, turn Speech to Text on in System Settings → Privacy & Security under each of them. Then choose **Restart** from the 🎙 menu bar icon.
 5. **Wait for ⏳ to turn into 🎙.** The first start downloads the speech model (~1.6 GB).
 6. *(Recommended)* **For the smart cleanup, install [Ollama](https://ollama.com/download)**, a free app, and open it once. Speech to Text notices it and downloads its cleanup model by itself (~2 GB, one time). The 🎙 menu shows the progress.

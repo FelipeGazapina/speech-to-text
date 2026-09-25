@@ -12,13 +12,22 @@ Baixe o arquivo **`SpeechToText.dmg`** da [última release](https://github.com/F
 2. Arraste o **Speech to Text** para a pasta **Aplicativos** (Applications).
 3. Abra o app pela pasta Aplicativos.
 
-**Na primeira vez**, o macOS avisa que não consegue verificar o app. Isso acontece porque ele não é assinado com uma conta paga de desenvolvedor da Apple.
+**Na primeira vez**, o macOS mostra a janela **"Speech to Text" Not Opened** ("não foi aberto"), dizendo que a Apple não conseguiu verificar o app. Isso acontece porque o app não é assinado com uma conta paga de desenvolvedor da Apple. **Não é um travamento** e o app não está com defeito.
 
-1. Clique em **OK / Concluído**.
-2. Vá em **Ajustes do Sistema → Privacidade e Segurança**, role até o fim e clique em **Abrir Mesmo Assim** ao lado de "Speech to Text".
-3. Confirme.
+1. Clique em **Done** (Concluído). **Não** clique em *Move to Trash*.
+2. Abra **Ajustes do Sistema → Privacidade e Segurança** (System Settings → Privacy & Security).
+3. Role até a seção **Segurança** (Security). Vai aparecer *"Speech to Text" was blocked to protect your Mac*. Clique em **Abrir Mesmo Assim** (Open Anyway).
+4. Digite sua senha ou use o Touch ID, e confirme em **Abrir Mesmo Assim** mais uma vez.
 
-Você só faz isso uma vez.
+Você só faz isso uma vez por versão. O botão **Abrir Mesmo Assim** só aparece durante cerca de uma hora depois da tentativa bloqueada. Se ele não estiver lá, tente abrir o app de novo e volte aos Ajustes.
+
+**Alternativa em uma linha:** se o botão não aparecer, abra o app **Terminal**, cole o comando abaixo e aperte Enter. Depois abra o app normalmente.
+
+```
+xattr -dr com.apple.quarantine "/Applications/Speech to Text.app"
+```
+
+Esse comando só remove a marca de "baixado da internet" que o macOS põe no app.
 
 ## 3. Dar as permissões
 

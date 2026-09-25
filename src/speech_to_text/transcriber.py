@@ -5,7 +5,10 @@ from __future__ import annotations
 import logging
 import platform
 import sys
+import threading
 import time
+from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -47,6 +50,41 @@ class Transcriber:
         if self.config.model.endswith(".en"):
             self.languages = ["en"]
         self._model = None  # faster-whisper model; mlx caches its own
+
+    def model_repo(self) -> str | None:
+        """The Hugging Face repo the MLX backend downloads (None for faster-whisper, which manages its own)."""
+        if self.backend != "mlx":
+            return None
+        return _MLX_REPOS.get(self.config.model, self.config.model)
+
+    def download(self, on_progress: Callable[[int, int], None]) -> None:
+        """Make sure the model files are on disk, reporting (bytes downloaded, total bytes) about once a second.
+
+        Downloads resume where they stopped, so quitting halfway through isn't a problem.
+        """
+        repo = self.model_repo()
+        if repo is None or Path(repo).exists():  # a local folder: nothing to download
+            return
+        from huggingface_hub import HfApi, snapshot_download
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        try:
+            total = sum(f.size or 0 for f in HfApi().model_info(repo, files_metadata=True).siblings or [])
+        except Exception:
+            log.warning("Couldn't get the model size; downloading without a percentage", exc_info=True)
+            total = 0
+        blobs = Path(HF_HUB_CACHE) / f"models--{repo.replace('/', '--')}" / "blobs"
+        finished = threading.Event()
+
+        def report() -> None:
+            while not finished.wait(1):
+                on_progress(_folder_size(blobs), total)
+
+        threading.Thread(target=report, daemon=True).start()
+        try:
+            snapshot_download(repo)
+        finally:
+            finished.set()
 
     def load(self) -> None:
         """Download (first run only) and load the model, then run a throwaway pass to warm it up."""
@@ -128,3 +166,13 @@ class Transcriber:
             beam_size=5,
         )
         return " ".join(segment.text.strip() for segment in segments).strip()
+
+
+def _folder_size(folder: Path) -> int:
+    size = 0
+    for path in folder.glob("*") if folder.exists() else []:
+        try:
+            size += path.stat().st_size
+        except OSError:  # a partial file renamed while we looked
+            pass
+    return size

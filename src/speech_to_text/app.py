@@ -30,6 +30,9 @@ log = logging.getLogger(__name__)
 
 ICON_IDLE, ICON_RECORDING, ICON_WORKING, ICON_LOADING, ICON_ERROR = "🎙", "🔴", "💭", "⏳", "⚠️"
 RECENT_COUNT = 10
+# A dictation that waited longer than this to be transcribed isn't pasted: the cursor has probably
+# moved on, and text appearing out of nowhere is worse than finding it under Recent.
+LATE_PASTE_SECONDS = 20
 STATUS_ICONS = {"paste_failed": "⚠️ ", "filtered": "🔇 ", "failed": "❌ ", "recovered": "♻️ "}
 FROZEN = getattr(sys, "frozen", False)  # running as the packaged Speech to Text.app
 HOTKEY_CHOICES = {
@@ -69,6 +72,7 @@ class Job:
     audio: np.ndarray | None
     app_name: str | None = None
     retry_id: int | None = None  # re-transcribe a failed dictation from its saved audio
+    stopped_at: float = 0.0  # time.monotonic() when the recording ended
 
 
 @dataclass
@@ -94,6 +98,9 @@ class SpeechToTextApp(rumps.App):
         )
         self.jobs: queue.Queue[Job] = queue.Queue()
         self.model_ready = False
+        self.download_progress: tuple[int, int] | None = None  # (bytes done, total) of the Whisper model
+        self._paste_help_pending = False
+        self._paste_help_shown = False
         self.error: str | None = None
         self.last: LastDictation | None = None
         self.recording_started = 0.0
@@ -180,7 +187,13 @@ class SpeechToTextApp(rumps.App):
             log.info("Recording stopped (%.1fs)", time.monotonic() - self.recording_started)
             if self.config.sounds:
                 play_sound("Pop")
-            self.jobs.put(Job(audio, frontmost_app_name()))
+            self.jobs.put(Job(audio, frontmost_app_name(), stopped_at=time.monotonic()))
+            return
+        if not self.model_ready:
+            # Recording now would only queue text to paste minutes later, wherever the cursor is by then.
+            log.info("Hotkey pressed while the speech model is still loading")
+            if self.config.sounds:
+                play_sound("Basso")
             return
         try:
             self.recorder.start()
@@ -205,6 +218,11 @@ class SpeechToTextApp(rumps.App):
     # --- transcription pipeline (background thread, one job at a time so pastes stay in order) ---
 
     def _worker(self) -> None:
+        try:
+            self.transcriber.download(lambda done, total: setattr(self, "download_progress", (done, total)))
+        except Exception:
+            log.exception("Model download failed; trying to load it anyway")
+        self.download_progress = None
         try:
             self.transcriber.load()
         except Exception as exc:
@@ -246,6 +264,12 @@ class SpeechToTextApp(rumps.App):
             self._menu_stale = True
         if not outcome.text:
             return
+        waited = time.monotonic() - job.stopped_at if job.stopped_at else 0.0
+        if waited > LATE_PASTE_SECONDS:
+            log.info("Not pasting: the dictation waited %.0fs; it's saved under Recent", waited)
+            self.last = LastDictation(outcome.text, outcome.history_id)
+            self.error = "A dictation finished late, so it wasn't pasted. It's under Recent."
+            return
 
         final = outcome.text
         log.info("Pasting: %r", final)
@@ -260,7 +284,8 @@ class SpeechToTextApp(rumps.App):
                 except Exception:
                     log.exception("Could not record paste status")
         if not pasted:
-            self.error = "Couldn't paste (grant Accessibility). Text is on your clipboard."
+            self.error = "Couldn't paste (allow Accessibility). The text is on your clipboard: press ⌘V."
+            self._paste_help_pending = True
 
     # --- menu bar ---
 
@@ -306,6 +331,16 @@ class SpeechToTextApp(rumps.App):
         if self._alerts:
             title, message = self._alerts.pop(0)
             rumps.alert(title, message)
+        if self._paste_help_pending and not self._paste_help_shown:
+            self._paste_help_pending, self._paste_help_shown = False, True
+            if rumps.alert(
+                "Allow Accessibility to paste automatically",
+                "Your text was transcribed and copied: press ⌘V to paste it.\n\n"
+                "To have it pasted for you, turn on Speech to Text under Accessibility in System Settings.",
+                ok="Open Settings",
+                cancel="Later",
+            ) == 1:
+                permissions.open_settings(permissions.ACCESSIBILITY)
         setup_title = CLEANUP_SETUP_TITLES.get(self.cleanup_state, self.cleanup_state)
         if self.setup_item.title != setup_title:
             self.setup_item.title = setup_title
@@ -320,10 +355,15 @@ class SpeechToTextApp(rumps.App):
             title, status = f"{ICON_RECORDING} {elapsed // 60}:{elapsed % 60:02d}", f"Recording… tap {hotkey} to stop"
         elif self.jobs.unfinished_tasks and self.model_ready:
             title, status = ICON_WORKING, "Transcribing…"
+        elif not self.model_ready and self.download_progress and self.download_progress[1]:
+            done, total = self.download_progress
+            percent = min(99, done * 100 // total)
+            title = f"{ICON_LOADING} {percent}%"
+            status = f"Downloading the speech model: {done / 1e9:.1f} of {total / 1e9:.1f} GB (one time only)"
         elif self.missing_permissions:
             title, status = ICON_ERROR, f"Needs permission: {', '.join(self.missing_permissions)} (see below)"
         elif not self.model_ready:
-            title, status = ICON_LOADING, "Loading Whisper model (first run downloads it)…"
+            title, status = ICON_LOADING, "Loading the speech model… (dictation starts working when it's ready)"
         elif self.error:
             title, status = ICON_ERROR, self.error[:120]
         else:

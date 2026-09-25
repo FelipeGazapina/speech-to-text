@@ -182,3 +182,58 @@ def test_no_restart_loop_when_nothing_was_pending(app_module, monkeypatch):
     app = _permission_app(app_module, monkeypatch, [], restart_pending=False)
     app._check_permissions()
     assert app.restarts == 0
+
+
+def test_late_dictation_is_saved_but_not_pasted(app_module, store, monkeypatch):
+    app = app_module.SpeechToTextApp.__new__(app_module.SpeechToTextApp)
+    app.config = parse_config()
+    app.history = store
+    app.pipeline = make_pipeline(store, FakeTranscriber("Ship it.", "en"))
+    app.last, app.error, app._menu_stale = None, None, False
+    pastes = []
+    monkeypatch.setattr(app_module, "paste_text", lambda text: pastes.append(text) or True)
+
+    stopped_long_ago = app_module.time.monotonic() - app_module.LATE_PASTE_SECONDS - 5
+    app._process(app_module.Job(speech(), "Slack", stopped_at=stopped_long_ago))
+
+    assert pastes == []
+    assert store.recent()[0].final_text == "Ship it."
+    assert "Recent" in app.error and app.last.text == "Ship it."
+
+
+def test_recording_is_refused_until_the_model_is_ready(app_module):
+    app = app_module.SpeechToTextApp.__new__(app_module.SpeechToTextApp)
+    app.config = parse_config()
+    app.config.sounds = False
+    app.model_ready = False
+    started = []
+    app.recorder = types.SimpleNamespace(is_recording=False, start=lambda: started.append(True))
+    app.toggle_recording()
+    assert started == []
+
+
+def test_model_download_reports_progress(tmp_path, monkeypatch):
+    import huggingface_hub
+    import huggingface_hub.constants
+
+    from speech_to_text.config import TranscriptionConfig
+    from speech_to_text.transcriber import Transcriber
+
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
+    blobs = tmp_path / "models--mlx-community--whisper-large-v3-turbo" / "blobs"
+
+    class FakeApi:
+        def model_info(self, repo, files_metadata):
+            return types.SimpleNamespace(siblings=[types.SimpleNamespace(size=3000), types.SimpleNamespace(size=None)])
+
+    def fake_snapshot_download(repo):
+        blobs.mkdir(parents=True)
+        (blobs / "weights.incomplete").write_bytes(b"x" * 1500)
+        __import__("time").sleep(1.3)
+        (blobs / "weights.incomplete").write_bytes(b"x" * 3000)
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", FakeApi)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    reports = []
+    Transcriber(TranscriptionConfig(backend="mlx")).download(lambda done, total: reports.append((done, total)))
+    assert (1500, 3000) in reports

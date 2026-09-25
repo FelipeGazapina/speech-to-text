@@ -72,6 +72,7 @@ class LLMCleaner:
         self.config = config
         self._reachable: bool | None = None
         self._checked_at = 0.0
+        self._warned_unreachable = False
 
     def is_available(self) -> bool:
         """Is Ollama up? Cached for 30s so a stopped Ollama doesn't slow every dictation."""
@@ -83,8 +84,9 @@ class LLMCleaner:
             with urllib.request.urlopen(f"{self.config.ollama_url}/api/tags", timeout=1):
                 self._reachable = True
         except (urllib.error.URLError, OSError):
-            if self._reachable is not False:
+            if not self._warned_unreachable:  # once per run, not every check
                 log.warning("Ollama not reachable at %s; pasting raw transcripts", self.config.ollama_url)
+                self._warned_unreachable = True
             self._reachable = False
         self._checked_at = time.monotonic()
         return self._reachable

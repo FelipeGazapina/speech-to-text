@@ -45,7 +45,9 @@ Depois clique no ícone 🎙 na barra de menus e escolha **Restart**.
 
 ## 4. Primeira execução
 
-Na primeira vez, o app baixa o modelo de reconhecimento de voz (cerca de 1,6 GB). Enquanto isso, o ícone mostra ⏳. Quando virar 🎙, está pronto.
+Na primeira vez, o app baixa o modelo de reconhecimento de voz (cerca de 1,6 GB). Enquanto isso, o ícone mostra ⏳ com a porcentagem (por exemplo ⏳ 45%). **O ditado só funciona quando o ícone virar 🎙.** Se você apertar o atalho antes, o Mac faz um som de erro e nada é gravado.
+
+Se o app for fechado ou reiniciado no meio do download, ele continua de onde parou.
 
 ## 5. (Recomendado) Limpeza inteligente do texto
 
@@ -85,6 +87,11 @@ Se o Speech to Text já aparece ativado e mesmo assim não funciona (comum depoi
 3. Adicione de novo com **+**, escolhendo o app na pasta Aplicativos.
 
 Faça o mesmo em **Acessibilidade**.
+
+**Gravou, mas não colou nada.** Confira três coisas no menu 🎙:
+- O ícone ainda mostra ⏳? Então o modelo não terminou de baixar. Espere virar 🎙.
+- Aparece ⚠️ **Allow Accessibility…**? Sem essa permissão o app não consegue colar. O texto fica na área de transferência: é só apertar ⌘V.
+- Tudo o que você ditou fica em **Recent** e em **Show all history…**.
 
 **O app fechou sozinho ou travou.** Me mande os arquivos de log: menu 🎙 → **Advanced → Show log files in Finder**. Envie os arquivos `speech-to-text.log` e `speech-to-text-console.log`.
 

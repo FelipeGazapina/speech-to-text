@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "speech-to-text"
-version = "0.1.1"
+version = "0.1.2"
 description = "Press a key, talk, press again: local Whisper dictation for macOS that pastes wherever your cursor is."
 readme = "README.md"
 requires-python = ">=3.11"

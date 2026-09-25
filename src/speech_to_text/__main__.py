@@ -159,20 +159,27 @@ def self_test(model: str | None = None, audio_files: list[str] | None = None, me
     from mlx_whisper.audio import log_mel_spectrogram
     from mlx_whisper.tokenizer import get_tokenizer
 
+    from .config import TranscriptionConfig
+    from .transcriber import Transcriber
+
     for module in ("AppKit", "ApplicationServices", "AVFoundation", "Quartz", "ServiceManagement", "rumps",
                    "sounddevice", "mlx_whisper", "ScreenCaptureKit", "CoreMedia", "WebKit"):
         importlib.import_module(module)
-    mel = log_mel_spectrogram(np.zeros(16_000, dtype=np.float32))  # needs the bundled mel filters
-    tokens = get_tokenizer(True, num_languages=100, language="pt").encode("olá mundo")  # bundled vocabulary
-    print(f"mlx {mx.__version__} (metal: {mx.metal.is_available()}), mel {tuple(mel.shape)}, {len(tokens)} tokens")
+
+    def check_bundle() -> str:
+        mel = log_mel_spectrogram(np.zeros(16_000, dtype=np.float32))  # needs the bundled mel filters
+        tokens = get_tokenizer(True, num_languages=100, language="pt").encode("olá mundo")  # bundled vocabulary
+        return f"mlx {mx.__version__} (metal: {mx.metal.is_available()}), mel {tuple(mel.shape)}, {len(tokens)} tokens"
+
+    # MLX ties arrays (including mlx_whisper's cached mel filters) to the thread that made them, so the
+    # check runs on the transcriber's model thread, exactly like everything MLX does in the app.
+    transcriber = Transcriber(TranscriptionConfig(model=model or "tiny", languages=["en", "pt"]))
+    print(transcriber._on_model_thread(check_bundle))
 
     if model:
-        from .config import TranscriptionConfig
         from .pipeline import load_wav
         from .prompts import whisper_prompt
-        from .transcriber import Transcriber
 
-        transcriber = Transcriber(TranscriptionConfig(model=model, languages=["en", "pt"]))
         transcriber.load()
         for path in audio_files or []:
             audio = load_wav(Path(path))

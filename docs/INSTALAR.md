@@ -93,7 +93,23 @@ Para ver as notas, abra **Open Speech to Text…** no menu 🎙:
 
 ## Atualizar
 
-Baixe o `.dmg` novo e substitua o app na pasta Aplicativos. O macOS pode pedir as permissões de novo depois de atualizar.
+A partir da **v0.2.0**, o app se atualiza sozinho. Quando sair uma versão nova, o menu 🎙 mostra **⬆️ Update to v…**. Clique nele, confirme em **Update**, e o app baixa, verifica e instala a versão nova, depois reinicia. Você também pode procurar atualizações a qualquer hora em 🎙 → **Check for updates**.
+
+As atualizações mantêm as permissões, o histórico e as configurações, e o aviso do Gatekeeper não aparece de novo.
+
+Se você está na **v0.1.x**, instale a v0.2.0 manualmente uma vez: saia do app (🎙 → **Quit**), baixe o `.dmg` novo, arraste para Aplicativos e escolha **Substituir**. Só dessa vez o macOS pode pedir as permissões de novo.
+
+## Sair e desinstalar
+
+- **Sair:** menu 🎙 → **Quit**. Se o app travar, abra o **Monitor de Atividade**, selecione *Speech to Text* e clique em **✕ → Forçar Encerrar**.
+- **Não abrir junto com o Mac:** menu 🎙 → desmarque **Open at login**, ou remova em Ajustes do Sistema → Geral → Itens de Início.
+- **Desinstalar:** saia do app e arraste **Speech to Text** de Aplicativos para o Lixo. Para apagar também seus dados, apague:
+  - `~/Library/Application Support/speech-to-text`: histórico de ditados e notas de reunião
+  - `~/.config/speech-to-text`: configurações
+  - `~/.cache/huggingface/hub/models--mlx-community--whisper-large-v3-turbo`: o modelo de voz (1,6 GB)
+  - `~/Library/Logs/speech-to-text*.log`: logs
+
+  No Finder, use **Ir → Ir para a Pasta…** (⇧⌘G) para abrir esses caminhos.
 
 ## Se algo não funcionar
 

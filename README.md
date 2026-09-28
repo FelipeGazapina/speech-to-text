@@ -2,6 +2,8 @@
 
 A free, local dictation app for macOS, in the spirit of Wispr Flow and tuned for how software engineers talk.
 
+**[⬇️ Download for Mac](https://github.com/FelipeGazapina/speech-to-text/releases/latest)** · [Install guide](#install-on-your-mac) · [Guia em português](docs/INSTALAR.md)
+
 **Tap a key → talk → tap again.** A moment later, the cleaned-up text is pasted wherever your cursor is: your editor, the terminal, Slack, a browser, a Claude Code prompt.
 
 - **$0, no subscription, no API keys.** Transcription runs on your Mac with OpenAI's open-source Whisper model. Your audio never leaves the machine.
@@ -20,6 +22,103 @@ A free, local dictation app for macOS, in the spirit of Wispr Flow and tuned for
 - **Speaks English and Portuguese, and mixes them.** Each dictation is auto-detected, but only between the languages you configure, so short Portuguese clips don't come out as Spanish. English tech terms inside Portuguese sentences are kept as they are, and nothing is translated.
 - **Remembers everything and learns from it.** Every dictation is saved in a local SQLite database, so nothing is lost if a paste fails. The app also learns from that history how you talk: the names you use, the fixes you make and your style in each language. See [How it learns](#how-it-learns).
 
+## Install on your Mac
+
+🇧🇷 **Em português:** [docs/INSTALAR.md](docs/INSTALAR.md)
+
+No Terminal and no developer tools needed. Setup takes about 5 minutes, plus the one-time model download.
+
+### Requirements
+
+- A Mac with **Apple Silicon** (M1, M2, M3, M4 or newer). To check, open  → About This Mac and look for "Chip: Apple M…".
+- **macOS 14 Sonoma** or later.
+- About **4 GB of free disk space**: 1.6 GB for the speech model, plus about 2 GB if you add the optional smart cleanup.
+
+### 1. Download
+
+Go to the **[latest release](https://github.com/FelipeGazapina/speech-to-text/releases/latest)** and, under **Assets**, click **`SpeechToText.dmg`**.
+
+### 2. Install
+
+1. Open `SpeechToText.dmg` from your Downloads folder.
+2. Drag **Speech to Text** onto the **Applications** folder in the window that opens.
+3. Eject the disk image (the ⏏ next to "Speech to Text" in Finder's sidebar). You can delete the .dmg afterwards.
+
+### 3. Open it the first time
+
+Open **Speech to Text** from Applications (or search for it with ⌘ Space).
+
+The app isn't signed with a paid Apple Developer ID, so the first time macOS shows **"Speech to Text" Not Opened**. That's Gatekeeper being cautious; the app didn't crash. To allow it:
+
+1. Click **Done**. Don't click *Move to Trash*.
+2. Open **System Settings → Privacy & Security** and scroll down to **Security**.
+3. Next to *"Speech to Text" was blocked…*, click **Open Anyway**, then confirm with your password or Touch ID.
+4. Click **Open Anyway** once more in the dialog that follows.
+
+The **Open Anyway** button only appears for about an hour after you tried to open the app. If you don't see it, open the app again and go back to Privacy & Security.
+
+<details>
+<summary>Prefer Terminal? One command does the same.</summary>
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Speech to Text.app"
+```
+
+</details>
+
+You only do this once. Later updates install from inside the app and don't ask again.
+
+### 4. Allow the permissions
+
+A **🎙** (or ⏳) appears in the menu bar at the top right of your screen. The app has no Dock icon; that menu bar icon is the app.
+
+macOS asks for these permissions. Allow each one:
+
+| Permission | Why | Needed for |
+|---|---|---|
+| **Microphone** | To hear you | Dictation and meeting notes |
+| **Accessibility** | To paste the text at your cursor (⌘V) | Dictation |
+| **Input Monitoring** | To notice when you tap the hotkey | Dictation |
+| **Screen & System Audio Recording** | To hear the other people in a call. Only sound is recorded, never your screen. | Meeting notes only, asked the first time you start one |
+
+If a prompt doesn't appear or you clicked *Don't Allow*, go to **System Settings → Privacy & Security**, open each item above and switch **Speech to Text** on. While something is missing, the 🎙 menu shows ⚠️ with a button that opens the right settings page.
+
+Once Input Monitoring is allowed, the app restarts by itself. If the hotkey still doesn't respond, choose **Restart** from the 🎙 menu.
+
+### 5. Wait for the model
+
+On the first start the menu bar shows **⏳** with a percentage while the speech model (~1.6 GB) downloads. When the icon turns into **🎙**, it's ready. This happens only once.
+
+### 6. Try it
+
+Click into any text field, **tap the right Option (⌥) key** once, say something, and tap it again. After a moment, the text is pasted where your cursor is.
+
+### 7. Recommended extras
+
+- **Open at login:** 🎙 menu → **Open at login**, so it's always there.
+- **Smart cleanup:** install **[Ollama](https://ollama.com/download)**, a free app, and open it once. Speech to Text notices it and downloads its cleanup model by itself (~2 GB, one time), with the progress shown in the 🎙 menu. This is what removes the "um"s, applies "no wait…" self-corrections and formats code terms, and it also writes the meeting summaries. Without it you still get the plain transcription.
+
+### Updating
+
+From **v0.2.0** on, updates install inside the app. When a new version is out, the 🎙 menu shows **⬆️ Update to v…**. Click it, confirm with **Update**, and the app downloads, verifies and installs the new version, then restarts. You can also check any time with 🎙 → **Check for updates**.
+
+Updates keep your permissions, history and settings, and they don't show the Gatekeeper dialog again.
+
+If you're on **v0.1.x**, install v0.2.0 once by hand: quit the app, repeat steps 1–2 and choose **Replace**. macOS may ask for the permissions again this one time; if the hotkey then does nothing, see [Troubleshooting](#troubleshooting).
+
+### Quitting and uninstalling
+
+- **Quit:** 🎙 menu → **Quit**. If the app ever stops responding, open **Activity Monitor**, select *Speech to Text* and click **✕ → Force Quit**.
+- **Stop it from opening at login:** 🎙 menu → uncheck **Open at login**, or remove it under System Settings → General → Login Items.
+- **Uninstall:** quit the app and drag **Speech to Text** from Applications to the Trash. To remove your data too, delete these as well:
+  - `~/Library/Application Support/speech-to-text`: dictation history and meeting notes
+  - `~/.config/speech-to-text`: settings
+  - `~/.cache/huggingface/hub/models--mlx-community--whisper-large-v3-turbo`: the speech model, 1.6 GB
+  - `~/Library/Logs/speech-to-text*.log`: logs
+
+  In Finder, use **Go → Go to Folder…** (⇧⌘G) to open these paths. To also free the cleanup model, run `ollama rm qwen2.5:3b` or uninstall Ollama.
+- **Permissions:** remove Speech to Text with **–** from each list in System Settings → Privacy & Security.
+
 ## How it works
 
 ```
@@ -37,26 +136,6 @@ The app lives in the menu bar. Its icon shows what it's doing:
 | 💭 | Transcribing and cleaning up |
 | ⏳ | Loading the model |
 | ⚠️ | Something failed (open the menu for details) |
-
-## Install the app (no developer tools)
-
-🇧🇷 **Em português:** [docs/INSTALAR.md](docs/INSTALAR.md)
-
-You need an Apple Silicon Mac (M1 or newer) with macOS 14 or later.
-
-1. **Download `SpeechToText.dmg`** from the [latest release](https://github.com/FelipeGazapina/speech-to-text/releases/latest).
-2. **Open the .dmg** and drag **Speech to Text** onto **Applications**.
-3. **Open it from Applications.** The app isn't signed with a paid Apple Developer ID, so the first time macOS shows *"Speech to Text" Not Opened*. That's Gatekeeper, not a crash.
-   - Click **Done** (not *Move to Trash*).
-   - Go to **System Settings → Privacy & Security**, scroll to **Security** and click **Open Anyway** next to "Speech to Text". Confirm with your password. The button only shows for about an hour after the blocked attempt.
-   - Or, in Terminal, run `xattr -dr com.apple.quarantine "/Applications/Speech to Text.app"` once.
-4. **Allow the three permissions** macOS asks for: **Microphone**, **Accessibility** and **Input Monitoring**. If a prompt doesn't appear, turn Speech to Text on in System Settings → Privacy & Security under each of them. Then choose **Restart** from the 🎙 menu bar icon.
-5. **Wait for ⏳ to turn into 🎙.** The first start downloads the speech model (~1.6 GB).
-6. *(Recommended)* **For the smart cleanup, install [Ollama](https://ollama.com/download)**, a free app, and open it once. Speech to Text notices it and downloads its cleanup model by itself (~2 GB, one time). The 🎙 menu shows the progress.
-
-Then choose **Open at login** in the 🎙 menu, and you're done: tap **right Option**, talk, and tap again.
-
-**Updating:** download the new .dmg and replace the app in Applications. Because the app isn't signed with a Developer ID, macOS may ask for the permissions again after an update.
 
 ## Install from source (developers)
 

@@ -74,11 +74,19 @@ def test_unknown_hotkey():
         validate_hotkey("caps_lock")
 
 
-def test_whisper_prompt_puts_user_vocabulary_first_and_stays_short():
+def test_whisper_prompt_puts_user_vocabulary_first():
     prompt = whisper_prompt("en", ["Zyxel", "API"])
     assert prompt.index("Zyxel") < prompt.index("JSON")
     assert prompt.count("API") == 1
-    assert len(prompt.split()) < 200
+
+
+@pytest.mark.parametrize("vocabulary", [None, [f"fetchUserById{i}" for i in range(60)]])
+def test_whisper_prompt_glossary_stays_far_below_whisper_prompt_window(vocabulary):
+    # Whisper keeps the last 223 prompt tokens. large-v3-turbo looped ("the most important... the most
+    # important...") when the glossary came near that, on dictations that opened with silence: measured
+    # 83 glossary tokens looped 0 of 24 times, 197 tokens 3 of 24, 232 tokens 17 of 24. Text is ~2.5 chars/token.
+    assert len(whisper_prompt("en", vocabulary)) <= 300
+    assert len(whisper_prompt("pt", vocabulary)) <= 300
 
 
 def test_whisper_prompt_language_and_recent_style():

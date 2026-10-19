@@ -22,8 +22,11 @@ _WHISPER_INTRO = {
     "pt": "Um engenheiro de software ditando notas, mensagens e código.",
 }
 
-# Whisper's prompt window is ~224 tokens; stay well under it.
-_MAX_GLOSSARY_WORDS = 110
+# Whisper keeps the last 223 prompt tokens, and a prompt near that makes large-v3-turbo loop or emit
+# garbage when the audio opens with silence or noise (measured, temperature 0: 83 glossary tokens
+# degenerated 0 of 24 runs, 197 tokens 3 of 24, 232 tokens 17 of 24). Budget characters, not words:
+# identifiers like fetchUserById cost ~2.5 chars per token, so a word budget lets a vocabulary overflow.
+_MAX_GLOSSARY_CHARS = 220
 _MAX_RECENT_WORDS = 40
 
 
@@ -34,11 +37,11 @@ def whisper_prompt(language: str | None = None, vocabulary: list[str] | None = N
     for term in [*(vocabulary or []), *DEV_VOCABULARY]:
         if term not in terms:
             terms.append(term)
-    words = 0
+    size = 0
     kept: list[str] = []
     for term in terms:
-        words += len(term.split())
-        if words > _MAX_GLOSSARY_WORDS:
+        size += len(term) + 2  # ", "
+        if size > _MAX_GLOSSARY_CHARS:
             break
         kept.append(term)
     intro = _WHISPER_INTRO.get(language or "en", _WHISPER_INTRO["en"])

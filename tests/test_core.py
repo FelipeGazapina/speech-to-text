@@ -1,3 +1,6 @@
+import sys
+import types
+
 import numpy as np
 import pytest
 
@@ -161,3 +164,39 @@ def test_set_top_level_value_keeps_the_rest_of_the_file(tmp_path):
     set_top_level_value("hotkey", "f18", path)
     config = load_config(path)
     assert (config.hotkey, config.cleanup.model) == ("f18", "gemma3:4b")
+
+
+def _fake_mlx_whisper(monkeypatch, outcomes):
+    """outcomes(prompt, kwargs) -> (text, compression_ratio, avg_logprob); returns the calls it saw."""
+    calls = []
+
+    def transcribe(audio, *, initial_prompt=None, **kwargs):
+        calls.append((initial_prompt, kwargs.get("temperature")))
+        text, ratio, logprob = outcomes(initial_prompt, kwargs)
+        return {"text": text, "segments": [{"compression_ratio": ratio, "avg_logprob": logprob}]}
+
+    monkeypatch.setitem(sys.modules, "mlx_whisper", types.SimpleNamespace(transcribe=transcribe))
+    return calls
+
+
+def _mlx_transcriber():
+    return Transcriber(TranscriptionConfig(backend="mlx", model="large-v3-turbo", languages=["en"]))
+
+
+def test_a_looping_prompted_pass_is_redone_without_the_prompt(monkeypatch):
+    # Noise with the glossary prompt came back as "Glossary, JSON, SQL, SQL, ..." (compression ratio 17.5)
+    # after 5-28s of temperature retries; without the prompt the same audio was clean.
+    calls = _fake_mlx_whisper(
+        monkeypatch,
+        lambda prompt, kwargs: ("Glossary, JSON, SQL, SQL, SQL", 17.5, -0.17) if prompt else ("I need a hand.", 1.0, -0.2),
+    )
+    audio = np.zeros(SAMPLE_RATE, dtype=np.float32)
+    assert _mlx_transcriber()._run(audio, "en", "A glossary prompt") == "I need a hand."
+    assert calls == [("A glossary prompt", 0.0), (None, None)]  # first pass can't spend retries; the redo can
+
+
+def test_a_confident_prompted_pass_is_kept(monkeypatch):
+    calls = _fake_mlx_whisper(monkeypatch, lambda prompt, kwargs: ("Open the Supabase dashboard.", 1.2, -0.25))
+    audio = np.zeros(SAMPLE_RATE, dtype=np.float32)
+    assert _mlx_transcriber()._run(audio, "en", "A glossary prompt") == "Open the Supabase dashboard."
+    assert len(calls) == 1

@@ -19,3 +19,4 @@ Speech to Text downloads its cleanup model by itself.
 - Every dictation is saved to a local history, which you can search in the app window.
 - **Updates itself** from the 🎙 menu, keeping macOS permissions (from 0.2.0 on).
 - It learns your vocabulary and the corrections you make.
+- Light on memory: the speech model leaves memory after 15 minutes without a dictation and comes back the moment you press the hotkey.

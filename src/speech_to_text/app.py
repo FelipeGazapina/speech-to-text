@@ -281,6 +281,7 @@ class SpeechToTextApp(rumps.App):
             return
         self.recording_started = time.monotonic()
         log.info("Recording started")
+        self.transcriber.warm()
         if self.config.sounds:
             play_sound("Tink")
 

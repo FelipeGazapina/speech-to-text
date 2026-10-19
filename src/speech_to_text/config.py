@@ -54,6 +54,9 @@ model = "large-v3-turbo"
 # One entry = always that language. Empty list = let Whisper pick from any language.
 # Note: ".en" models (small.en, base.en) only do English.
 languages = ["en", "pt"]
+# Minutes without a dictation before the speech model leaves memory (it holds about 1.5 GB). The next
+# dictation loads it again in a few seconds, starting the moment you press the hotkey. 0 = keep it loaded.
+unload_after_minutes = 15
 
 [cleanup]
 # The "reasoning" step: a free local LLM (via Ollama) rewrites the raw transcript -
@@ -92,6 +95,7 @@ class TranscriptionConfig:
     backend: str = "auto"
     model: str = "large-v3-turbo"
     languages: list[str] = field(default_factory=lambda: ["en", "pt"])
+    unload_after_minutes: float = 15
 
 
 @dataclass

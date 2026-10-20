@@ -195,3 +195,59 @@ def test_store_lists_updates_and_deletes(store, tmp_path):
         store.update(first, bogus=1)
     store.delete(first)
     assert store.get(first) is None
+
+
+def test_speech_chunks_pack_regions_into_whisper_windows():
+    from speech_to_text.meeting_notes import speech_chunks
+
+    s = RATE
+    regions = [(0, 2 * s), (5 * s, 8 * s), (20 * s, 29 * s), (31 * s, 33 * s), (40 * s, 90 * s), (91 * s, 92 * s)]
+    # Up to 30 s from the first region's start to the last one's end, silence in between kept; a
+    # region longer than 30 s stays on its own.
+    assert speech_chunks(regions) == [(0, 29 * s), (31 * s, 33 * s), (40 * s, 90 * s), (91 * s, 92 * s)]
+    assert speech_chunks([]) == []
+
+
+def test_process_meeting_resumes_where_it_stopped(store, tmp_path):
+    folder = tmp_path / "meeting-audio" / "1"
+    folder.mkdir(parents=True)
+    # Four separate stretches of speech, each over 30 s apart: four chunks.
+    audio = np.concatenate([np.concatenate([tone(2), silence(40)]) for _ in range(4)])
+    write_pcm(folder / "me.pcm", audio)
+    meeting_id = store.start(folder, system_audio=False)
+
+    class DiesOnThirdChunk:
+        calls = 0
+
+        def detect_language(self, audio):
+            return "en"
+
+        def transcribe_segments(self, audio, language, prompt=None):
+            type(self).calls += 1
+            if type(self).calls == 3:
+                raise RuntimeError("the app was killed here")
+            return [(0.0, 2.0, f"chunk {type(self).calls}")]
+
+    with pytest.raises(RuntimeError):
+        process_meeting(meeting_id, store, DiesOnThirdChunk(), summarizer=None)
+    saved = store.get(meeting_id)
+    assert [s.text for s in saved.progress["me"].segments] == ["chunk 1", "chunk 2"]
+    assert saved.progress["me"].language == "en" and (folder / "me.pcm").exists()
+
+    class CountsCalls:
+        calls = 0
+
+        def detect_language(self, audio):
+            raise AssertionError("the language was already detected")
+
+        def transcribe_segments(self, audio, language, prompt=None):
+            type(self).calls += 1
+            return [(0.0, 2.0, f"later {type(self).calls}")]
+
+    progress = []
+    meeting = process_meeting(meeting_id, store, CountsCalls(), summarizer=None, on_progress=progress.append)
+    assert CountsCalls.calls == 2  # only the two chunks that weren't done
+    assert [s.text for s in meeting.segments] == ["chunk 1", "chunk 2", "later 1", "later 2"]
+    assert [round(s.start) for s in meeting.segments] == [0, 42, 84, 126]
+    assert meeting.status == "done" and meeting.progress == {} and not folder.exists()
+    assert progress[0].percent == 75 and progress[-1].percent == 100  # 2 of 4 were already done

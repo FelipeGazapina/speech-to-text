@@ -28,7 +28,7 @@ from .meeting_notes import Summarizer
 from .meetings import MeetingStore
 from .learning import correction_pairs
 from .paster import copy_text, frontmost_app_name, paste_text
-from . import __version__, permissions, updater
+from . import __version__, dialogs, permissions, updater
 from .pipeline import DictationFailed, Pipeline
 from .recorder import Recorder
 from .transcriber import Transcriber
@@ -474,14 +474,14 @@ class SpeechToTextApp(rumps.App):
     def _refresh_update_ui(self) -> None:
         if self._update_prompt:
             update, self._update_prompt = self._update_prompt, None
-            if rumps.alert(
+            dialogs.show(
                 f"Speech to Text {update.version} is available",
                 f"You have {__version__}. Update now? It downloads in the background (~150 MB) and the app "
                 "restarts by itself. Your history, settings and permissions stay as they are.",
                 ok="Update",
                 cancel="Later",
-            ) == 1:
-                self._start_update()
+                on_ok=self._start_update,
+            )
         idle = not self.recorder.is_recording and not self.jobs.unfinished_tasks and not self.meetings.busy
         if self._update_ready_to_relaunch and idle:
             self._update_ready_to_relaunch = False
@@ -521,22 +521,21 @@ class SpeechToTextApp(rumps.App):
     def _show_pending_alerts(self) -> None:
         if self._alerts:
             title, message = self._alerts.pop(0)
-            rumps.alert(title, message)
+            dialogs.show(title, message)
         if self._restart_suggestion:
             title, message = self._restart_suggestion
             self._restart_suggestion = None
-            if rumps.alert(title, message, ok="Restart now", cancel="Later") == 1:
-                self.reload(None)
+            dialogs.show(title, message, ok="Restart now", cancel="Later", on_ok=lambda: self.reload(None))
         if self._paste_help_pending and not self._paste_help_shown:
             self._paste_help_pending, self._paste_help_shown = False, True
-            if rumps.alert(
+            dialogs.show(
                 "Allow Accessibility to paste automatically",
                 "Your text was transcribed and copied: press ⌘V to paste it.\n\n"
                 "To have it pasted for you, turn on Speech to Text under Accessibility in System Settings.",
                 ok="Open Settings",
                 cancel="Later",
-            ) == 1:
-                permissions.open_settings(permissions.ACCESSIBILITY)
+                on_ok=lambda: permissions.open_settings(permissions.ACCESSIBILITY),
+            )
 
     def _refresh_menu_items(self) -> None:
         setup_title = CLEANUP_SETUP_TITLES.get(self.cleanup_state, self.cleanup_state)
@@ -708,9 +707,8 @@ class SpeechToTextApp(rumps.App):
             meeting_id = self._notes_ready.pop(0)
             meeting = self.meetings.store.get(meeting_id)
             name = meeting.display_title if meeting else "Your meeting"
-            if rumps.alert("Meeting notes ready", f"“{name}” is transcribed and summarized.",
-                           ok="Open notes", cancel="Later") == 1:
-                self.open_window(meeting_id)
+            dialogs.show("Meeting notes ready", f"“{name}” is transcribed and summarized.",
+                         ok="Open notes", cancel="Later", on_ok=lambda: self.open_window(meeting_id))
 
     def change_hotkey(self, key: str) -> None:
         if key == self.config.hotkey:
@@ -731,7 +729,7 @@ class SpeechToTextApp(rumps.App):
                 raise RuntimeError(error)
         except Exception as exc:
             log.exception("Could not change the login item")
-            rumps.alert(
+            dialogs.show(
                 "Couldn't change Open at login",
                 f"{exc}\n\nYou can add it yourself: System Settings → General → Login Items → +.",
             )
@@ -747,7 +745,7 @@ class SpeechToTextApp(rumps.App):
     def fix_last(self, _item) -> None:
         """Edit the last dictation. The fix is copied, saved, and learned from."""
         if not self.last:
-            rumps.alert("Nothing to fix yet", "Dictate something first.")
+            dialogs.show("Nothing to fix yet", "Dictate something first.")
             return
         from AppKit import NSApp
 

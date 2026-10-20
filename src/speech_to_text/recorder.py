@@ -26,6 +26,7 @@ class Recorder:
         self._stream = None
         self._rate = SAMPLE_RATE
         self._session = 0  # audio arriving from an older, abandoned stream is ignored
+        self.level = 0.0  # loudness of the latest audio (RMS, 0..1), for the menu bar's live meter
 
     @property
     def is_recording(self) -> bool:
@@ -69,6 +70,7 @@ class Recorder:
             with self._lock:
                 if session == self._session:
                     self._chunks.append(indata[:, 0].copy())
+                    self.level = float(np.sqrt(np.mean(np.square(indata[:, 0]))))
 
         return sd.InputStream(samplerate=rate, channels=1, dtype="float32", callback=on_audio)
 
@@ -99,11 +101,19 @@ def close_stream(stream, name: str) -> None:
     """abort() drops pending buffers instead of waiting for them, which is faster and less prone to
     hanging than stop(). If it hangs anyway, only this helper thread is stuck."""
     started = time.monotonic()
+    finished = threading.Event()
+    # A close that never returns leaves no trace otherwise, and could explain the next open failing.
+    stuck = threading.Timer(5, lambda: finished.is_set() or log.error("Closing the %s stream is still hanging after 5s", name))
+    stuck.daemon = True
+    stuck.start()
     try:
         stream.abort(ignore_errors=True)
         stream.close(ignore_errors=True)
     except Exception:
         log.exception("Closing the %s stream failed", name)
+    finally:
+        finished.set()
+        stuck.cancel()
     took = time.monotonic() - started
     if took > 2:
         log.warning("Closing the %s stream took %.1fs", name, took)

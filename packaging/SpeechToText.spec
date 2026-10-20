@@ -10,7 +10,7 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 datas, binaries, hiddenimports = [], [], []
 # Packages with native libraries or data files PyInstaller can't discover on its own:
 # MLX (libmlx + Metal shaders), Whisper's mel filters and tokenizer vocabularies, PortAudio.
-for package in ("mlx", "mlx_whisper", "sounddevice", "_sounddevice_data", "tiktoken", "tiktoken_ext"):
+for package in ("mlx", "mlx_whisper", "sounddevice", "_sounddevice_data", "tiktoken", "tiktoken_ext", "certifi"):
     try:
         package_datas, package_binaries, package_imports = collect_all(package)
     except Exception:

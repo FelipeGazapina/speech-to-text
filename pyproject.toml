@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy",
     "sounddevice",
+    "certifi",  # TLS roots for the update check inside the packaged app
     # macOS glue: menu bar, global hotkey, clipboard, synthetic Cmd+V
     "rumps; sys_platform == 'darwin'",
     "pyobjc-framework-Cocoa; sys_platform == 'darwin'",

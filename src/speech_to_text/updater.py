@@ -60,8 +60,22 @@ def pick_update(release: dict, current_version: str) -> Update | None:
 
 def check_for_update(current_version: str) -> Update | None:
     request = urllib.request.Request(RELEASES_API, headers={"Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(request, timeout=15) as response:
+    with urllib.request.urlopen(request, timeout=15, context=_tls()) as response:
         return pick_update(json.loads(response.read()), current_version)
+
+
+def _tls():
+    """The packaged app's Python has no system certificate store, so every HTTPS call failed with
+    CERTIFICATE_VERIFY_FAILED (the log showed one per update check): use certifi's bundle."""
+    import ssl
+
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        log.warning("certifi is not bundled: HTTPS verification will use the (possibly empty) system store")
+        return ssl.create_default_context()
 
 
 def running_app_path() -> Path | None:
@@ -76,7 +90,7 @@ def running_app_path() -> Path | None:
 
 def download(update: Update, folder: Path, on_progress: Callable[[int, int], None] | None = None) -> Path:
     target = folder / DMG_NAME
-    with urllib.request.urlopen(update.url, timeout=60) as response, open(target, "wb") as out:
+    with urllib.request.urlopen(update.url, timeout=60, context=_tls()) as response, open(target, "wb") as out:
         total = int(response.headers.get("Content-Length") or update.size or 0)
         done = 0
         while chunk := response.read(1 << 20):

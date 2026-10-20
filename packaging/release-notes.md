@@ -1,3 +1,5 @@
+**What's new in 0.3.0:** meeting notes transcribe about 5x faster (Whisper gets 30 s of speech per call instead of one short remark), every finished part is saved so quitting or a crash resumes where it stopped instead of starting over, dictations are no longer dropped while a meeting is being transcribed, a second click while a meeting is starting or stopping no longer starts another one, and the menu bar icon and the window show what is happening: live loudness, a spinner, the percentage done and the time left. Updates wait for a meeting to end before installing, and the update check works again in the packaged app.
+
 **Download `SpeechToText.dmg` below**, open it and drag **Speech to Text** into Applications.
 Requires a Mac with Apple silicon (M1 or newer) and macOS 14 or later.
 

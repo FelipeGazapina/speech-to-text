@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from .meeting_notes import Summarizer, process_meeting, summarize_meeting
+from .meeting_notes import Progress, Summarizer, process_meeting, summarize_meeting
 from .meetings import MeetingStore
 
 log = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ class MeetingController:
         self.is_model_ready = is_model_ready
         self.on_notes_ready = on_notes_ready
         self.current_id: int | None = None
-        self.progress: str | None = None  # e.g. "Transcribing the meeting… 40%"
+        self.progress: Progress | None = None  # e.g. "Transcribing the meeting… 40%", with percent and ETA
         self.version = 0  # bumped on every change, so the window knows when to refresh
         self.missing_system_audio = False  # the last meeting couldn't record the computer's audio
         self._lock = threading.Lock()
@@ -44,6 +44,11 @@ class MeetingController:
     @property
     def recording(self) -> bool:
         return self.current_id is not None
+
+    @property
+    def levels(self) -> dict[str, float]:
+        """How loud each track is right now (0..1), to show that the meeting is really being heard."""
+        return self.recorder.levels if self.recording else {}
 
     @property
     def busy(self) -> bool:
@@ -121,15 +126,15 @@ class MeetingController:
 
     # --- background processing ---
 
-    def _set_progress(self, message: str) -> None:
-        self.progress = message
+    def _set_progress(self, progress: Progress) -> None:
+        self.progress = progress
         self._changed()
 
     def _worker(self) -> None:
         while True:
             meeting_id = self._queue.get()
             while not self.is_model_ready():
-                self.progress = "Waiting for the speech model to load…"
+                self.progress = Progress("Waiting for the speech model to load…")
                 time.sleep(1)
             try:
                 process_meeting(meeting_id, self.store, self.transcriber, self.summarizer, self._set_progress)

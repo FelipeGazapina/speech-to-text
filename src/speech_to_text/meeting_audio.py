@@ -37,6 +37,7 @@ class PcmWriter:
         self.path = path
         self.started = started
         self.frames = 0
+        self.level = 0.0  # loudness of the latest audio (RMS, 0..1), for the live meters
         self._queue: queue.Queue[np.ndarray | None] = queue.Queue()
         self._lock = threading.Lock()
         self._file = open(path, "ab")
@@ -44,6 +45,8 @@ class PcmWriter:
         self._thread.start()
 
     def write(self, samples: np.ndarray) -> None:
+        if len(samples):
+            self.level = float(np.sqrt(np.mean(np.square(samples, dtype=np.float32))))
         with self._lock:
             behind = int((time.monotonic() - self.started) * SAMPLE_RATE) - len(samples) - self.frames
             if behind > SAMPLE_RATE // 2:  # more than half a second of missing audio: fill the gap
@@ -304,6 +307,10 @@ class MeetingRecorder:
     @property
     def elapsed(self) -> float:
         return time.monotonic() - self.started if self.is_recording else 0.0
+
+    @property
+    def levels(self) -> dict[str, float]:
+        return {writer.path.stem: writer.level for writer in self._writers}  # "me" and "others", see TRACKS
 
     def start(self, folder: Path) -> bool:
         """Start both tracks. Returns whether the computer's audio is being recorded too."""

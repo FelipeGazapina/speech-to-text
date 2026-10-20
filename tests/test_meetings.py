@@ -114,7 +114,7 @@ def test_process_meeting_transcribes_both_tracks_and_deletes_the_audio(store, tm
     assert meeting.duration_seconds == pytest.approx(9, abs=0.1)
     assert not folder.exists() and meeting.audio_dir is None
     assert "Você: Bom dia, pessoal." in meeting.transcript_text()
-    assert progress[-1].endswith("100%")
+    assert progress[-1].message.endswith("100%") and progress[-1].percent == 100
 
 
 def test_failed_transcription_keeps_the_audio_for_a_retry(store, tmp_path):
@@ -202,17 +202,59 @@ def test_speech_chunks_pack_regions_into_whisper_windows():
 
     s = RATE
     regions = [(0, 2 * s), (5 * s, 8 * s), (20 * s, 29 * s), (31 * s, 33 * s), (40 * s, 90 * s), (91 * s, 92 * s)]
-    # Up to 30 s from the first region's start to the last one's end, silence in between kept; a
-    # region longer than 30 s stays on its own.
-    assert speech_chunks(regions) == [(0, 29 * s), (31 * s, 33 * s), (40 * s, 90 * s), (91 * s, 92 * s)]
+    # Up to 30 s of speech per chunk, however far apart the regions are; a region longer than
+    # 30 s stays on its own.
+    assert speech_chunks(regions) == [
+        [(0, 2 * s), (5 * s, 8 * s), (20 * s, 29 * s), (31 * s, 33 * s)],
+        [(40 * s, 90 * s)],
+        [(91 * s, 92 * s)],
+    ]
     assert speech_chunks([]) == []
+
+
+def test_a_segment_found_in_a_later_region_of_the_chunk_keeps_the_time_it_was_said(store, tmp_path):
+    folder = tmp_path / "a"
+    folder.mkdir()
+    # Two remarks a minute apart go to Whisper together, without the silence between them.
+    write_pcm(folder / "me.pcm", np.concatenate([tone(2), silence(60), tone(2), silence(1)]))
+    meeting_id = store.start(folder, system_audio=False)
+
+    class HearsTwoRemarks:
+        def detect_language(self, audio):
+            return "en"
+
+        def transcribe_segments(self, audio, language, prompt=None):
+            assert len(audio) / RATE == pytest.approx(4.75, abs=0.1)  # 2 s + 2 s of tone, 0.25 s padding around each
+            return [(0.3, 2.0, "first"), (2.8, 4.5, "second")]
+
+    meeting = process_meeting(meeting_id, store, HearsTwoRemarks(), summarizer=None)
+    assert [(round(s.start, 1), s.text) for s in meeting.segments] == [(0.3, "first"), (62.3, "second")]
+
+
+def test_a_track_cut_mid_sample_by_a_crash_is_still_transcribed(store, tmp_path):
+    folder = tmp_path / "a"
+    folder.mkdir()
+    write_pcm(folder / "me.pcm", tone(2))
+    with open(folder / "me.pcm", "ab") as f:
+        f.write(b"\x01")  # half a sample: the app died mid-write
+    meeting_id = store.start(folder, system_audio=False)
+
+    class Hears:
+        def detect_language(self, audio):
+            return "en"
+
+        def transcribe_segments(self, audio, language, prompt=None):
+            return [(0.0, 2.0, "hello")]
+
+    meeting = process_meeting(meeting_id, store, Hears(), summarizer=None)
+    assert meeting.status == "done" and [s.text for s in meeting.segments] == ["hello"]
 
 
 def test_process_meeting_resumes_where_it_stopped(store, tmp_path):
     folder = tmp_path / "meeting-audio" / "1"
     folder.mkdir(parents=True)
-    # Four separate stretches of speech, each over 30 s apart: four chunks.
-    audio = np.concatenate([np.concatenate([tone(2), silence(40)]) for _ in range(4)])
+    # Four stretches of 16 s of speech: no two fit in a 30 s chunk, so four chunks.
+    audio = np.concatenate([np.concatenate([tone(16), silence(10)]) for _ in range(4)])
     write_pcm(folder / "me.pcm", audio)
     meeting_id = store.start(folder, system_audio=False)
 
@@ -248,6 +290,6 @@ def test_process_meeting_resumes_where_it_stopped(store, tmp_path):
     meeting = process_meeting(meeting_id, store, CountsCalls(), summarizer=None, on_progress=progress.append)
     assert CountsCalls.calls == 2  # only the two chunks that weren't done
     assert [s.text for s in meeting.segments] == ["chunk 1", "chunk 2", "later 1", "later 2"]
-    assert [round(s.start) for s in meeting.segments] == [0, 42, 84, 126]
+    assert [round(s.start) for s in meeting.segments] == [0, 26, 52, 78]
     assert meeting.status == "done" and meeting.progress == {} and not folder.exists()
     assert progress[0].percent == 75 and progress[-1].percent == 100  # 2 of 4 were already done

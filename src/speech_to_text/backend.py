@@ -27,11 +27,14 @@ class AppBackend:
         self._stop = stop_meeting or meetings.stop
 
     def state(self) -> dict:
-        recorder = self.meetings.recorder
+        recorder, progress = self.meetings.recorder, self.meetings.progress
         return {
             "meeting_recording": self.meetings.recording,
             "meeting_elapsed": recorder.elapsed if self.meetings.recording else 0,
-            "meeting_progress": self.meetings.progress,
+            "meeting_levels": self.meetings.levels,
+            "meeting_progress": progress.message if progress else None,
+            "meeting_percent": progress.percent if progress else None,
+            "meeting_seconds_left": progress.seconds_left if progress else None,
             "meetings_version": self.meetings.version,
             "model_ready": self._model_ready(),
         }

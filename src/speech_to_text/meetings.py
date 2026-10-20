@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS meetings (
     segments         TEXT,                               -- JSON: [{"start", "end", "speaker", "text"}]
     summary          TEXT,                               -- Markdown
     error            TEXT,
-    audio_dir        TEXT                                -- temporary audio; NULL once transcribed
+    audio_dir        TEXT,                               -- temporary audio; NULL once transcribed
+    progress         TEXT                                -- JSON per track: what's transcribed so far (see TrackProgress)
 );
 """
 
@@ -44,6 +45,27 @@ class Segment:
 
 
 @dataclass
+class TrackProgress:
+    """How far one track's transcription got, saved after every chunk so a quit or crash in the
+    middle of a 2-hour transcription resumes where it stopped instead of starting over."""
+
+    language: str | None = None
+    done_until: int = 0  # sample index: chunks that start before it are transcribed
+    segments: list[Segment] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "language": self.language,
+            "done_until": int(self.done_until),
+            "segments": [{"start": float(s.start), "end": float(s.end), "speaker": s.speaker, "text": s.text} for s in self.segments],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TrackProgress":
+        return cls(data.get("language"), int(data.get("done_until", 0)), [Segment(**s) for s in data.get("segments", [])])
+
+
+@dataclass
 class Meeting:
     id: int
     started_at: str
@@ -56,6 +78,7 @@ class Meeting:
     error: str | None
     audio_dir: str | None
     segments: list[Segment] = field(default_factory=list)
+    progress: dict[str, TrackProgress] = field(default_factory=dict)  # by speaker, while processing
 
     @property
     def display_title(self) -> str:
@@ -101,6 +124,9 @@ class MeetingStore:
         with open_db(path) as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(_SCHEMA)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(meetings)")}
+            if "progress" not in columns:  # databases from before v0.3
+                db.execute("ALTER TABLE meetings ADD COLUMN progress TEXT")
 
     def start(self, audio_dir: Path, system_audio: bool) -> int:
         with open_db(self.path) as db:
@@ -111,11 +137,13 @@ class MeetingStore:
 
     def update(self, meeting_id: int, **fields) -> None:
         allowed = {"duration_seconds", "title", "language", "status", "system_audio", "summary", "error", "audio_dir"}
-        unknown = set(fields) - allowed - {"segments"}
+        unknown = set(fields) - allowed - {"segments", "progress"}
         if unknown:
             raise ValueError(f"Unknown meeting fields: {unknown}")
         if "segments" in fields:
             fields["segments"] = json.dumps([s.__dict__ for s in fields["segments"]], ensure_ascii=False)
+        if fields.get("progress") is not None:
+            fields["progress"] = json.dumps({k: v.to_dict() for k, v in fields["progress"].items()}, ensure_ascii=False)
         assignments = ", ".join(f"{name} = ?" for name in fields)
         with open_db(self.path) as db:
             db.execute(f"UPDATE meetings SET {assignments} WHERE id = ?", (*fields.values(), meeting_id))
@@ -142,9 +170,11 @@ class MeetingStore:
 
 
 def _to_meeting(row, with_segments: bool = True) -> Meeting:
-    segments = []
+    segments, progress = [], {}
     if with_segments and row["segments"]:
         segments = [Segment(**item) for item in json.loads(row["segments"])]
+    if with_segments and row["progress"]:
+        progress = {speaker: TrackProgress.from_dict(data) for speaker, data in json.loads(row["progress"]).items()}
     return Meeting(
         id=row["id"],
         started_at=row["started_at"],
@@ -157,4 +187,5 @@ def _to_meeting(row, with_segments: bool = True) -> Meeting:
         error=row["error"],
         audio_dir=row["audio_dir"],
         segments=segments,
+        progress=progress,
     )

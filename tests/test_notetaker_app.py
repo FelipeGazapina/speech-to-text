@@ -36,6 +36,10 @@ class FakeRecorder:
     def elapsed(self):
         return 42.0
 
+    @property
+    def levels(self):
+        return {"me": 0.1, "others": 0.0}
+
     def start(self, folder):
         folder.mkdir(parents=True)
         (np.concatenate([np.zeros(RATE), np.sin(np.arange(2 * RATE) / 5) * 0.2]) * 32767).astype("<i2").tofile(
@@ -110,7 +114,7 @@ def test_controller_waits_for_the_model(tmp_path):
                                  is_model_ready=lambda: model["ready"], on_notes_ready=ready.append)
     meeting_id = meetings.start()["meeting_id"]
     meetings.stop()
-    assert wait_for(lambda: meetings.progress and "Waiting" in meetings.progress)
+    assert wait_for(lambda: meetings.progress and "Waiting" in meetings.progress.message)
     assert ready == [] and meetings.busy
     model["ready"] = True
     assert wait_for(lambda: ready == [meeting_id])

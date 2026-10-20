@@ -480,6 +480,11 @@ class SpeechToTextApp(rumps.App):
                         self.update_status = f"Downloading v{update.version}…{percent}"
 
                     dmg = updater.download(update, Path(folder), progress)
+                    # Installing swaps the app on disk under the running process: not while a meeting
+                    # is being recorded or transcribed, which can take hours. Wait for it to end.
+                    while self.meetings.busy:
+                        self.update_status = f"v{update.version} installs after the meeting…"
+                        time.sleep(5)
                     self.update_status = f"Installing v{update.version}…"
                     updater.install_from_dmg(dmg, app_path)
                 self.update_status = f"Restarting into v{update.version}…"

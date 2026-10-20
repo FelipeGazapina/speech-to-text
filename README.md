@@ -106,6 +106,13 @@ Updates keep your permissions, history and settings, and they don't show the Gat
 
 If you're on **v0.1.x**, install v0.2.0 once by hand: quit the app, repeat steps 1–2 and choose **Replace**. macOS may ask for the permissions again this one time; if the hotkey then does nothing, see [Troubleshooting](#troubleshooting).
 
+If you're on **v0.2.0**, its update check fails (no TLS certificates in that build), so install the next version once from a checkout of this repo, with the [`gh` CLI](https://cli.github.com) logged in. It downloads the release, checks it is signed like the installed app (so the permissions stay), waits for a meeting that is being recorded or transcribed to finish, then quits, swaps and relaunches the app:
+
+```sh
+python3 packaging/install_release.py          # latest release, after the current meeting
+python3 packaging/install_release.py --now    # right away; the new app resumes any unfinished meeting
+```
+
 ### Quitting and uninstalling
 
 - **Quit:** 🎙 menu → **Quit**. If the app ever stops responding, open **Activity Monitor**, select *Speech to Text* and click **✕ → Force Quit**.

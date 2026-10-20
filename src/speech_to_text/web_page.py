@@ -39,6 +39,24 @@ PAGE = r"""<!doctype html>
   .spacer { flex: 1; }
   #meeting-status { color: var(--muted); font-size: 13px; }
   #meeting-button.recording { background: var(--danger); border-color: var(--danger); color: #fff; }
+  #meeting-button .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: currentColor;
+                         margin-right: 6px; vertical-align: 1px; }
+  #meeting-button.recording .dot { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.7); } }
+  .progress { width: 180px; height: 6px; border-radius: 3px; background: var(--badge); overflow: hidden; }
+  .progress .bar { height: 100%; width: 0; background: var(--accent); transition: width .6s ease; }
+  .progress.busy .bar { background: repeating-linear-gradient(90deg, var(--accent) 0 12px, transparent 12px 24px);
+                        width: 100% !important; animation: slide 1s linear infinite; }
+  @keyframes slide { to { background-position: 24px 0; } }
+  .progress.inline { width: 100%; height: 8px; margin: 8px 0 2px; }
+  .meters { display: inline-flex; gap: 10px; align-items: flex-end; font-size: 11px; color: var(--muted); }
+  .meters .meter { display: inline-flex; align-items: center; gap: 4px; }
+  .meters .meter i { display: inline-block; width: 6px; height: 18px; border-radius: 3px; background: var(--badge);
+                     position: relative; overflow: hidden; }
+  .meters .meter i::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: var(--level, 0%);
+                            background: var(--me); transition: height .15s; }
+  .meters .meter.others i::after { background: var(--others); }
+  .hidden { display: none !important; }
   main { flex: 1; display: flex; min-height: 0; }
   .view { flex: 1; display: none; min-height: 0; }
   .view.active { display: flex; }
@@ -85,7 +103,12 @@ PAGE = r"""<!doctype html>
   </nav>
   <div class="spacer"></div>
   <span id="meeting-status"></span>
-  <button id="meeting-button" class="primary">● Start meeting notes</button>
+  <div id="progress" class="progress hidden"><div class="bar"></div></div>
+  <span id="meters" class="meters hidden">
+    <span class="meter me" title="Your microphone">You <i id="meter-me"></i></span>
+    <span class="meter others" title="The computer's audio (the other people)">Others <i id="meter-others"></i></span>
+  </span>
+  <button id="meeting-button" class="primary"><span class="dot"></span>Start meeting notes</button>
 </header>
 <main>
   <section id="notetaker" class="view active">
@@ -136,6 +159,17 @@ function clock(seconds) {
   return h ? `${h}:${pad(m)}:${pad(r)}` : `${pad(m)}:${pad(r)}`;
 }
 const STATUS = { recording: "recording", processing: "transcribing…", failed: "failed" };
+let live = { id: null, percent: null, seconds_left: null };  // the meeting being transcribed right now, from /api/state
+
+function timeLeft(seconds) {
+  if (seconds == null) return "";
+  const minutes = Math.round(seconds / 60);
+  return minutes < 1 ? " · less than a minute left" : ` · about ${minutes} min left`;
+}
+function setLevel(id, level) {
+  const db = 20 * Math.log10(Math.max(level || 0, 1e-6));
+  document.getElementById(id).style.setProperty("--level", `${Math.max(0, Math.min(100, (db + 50) / 36 * 100))}%`);
+}
 
 // Minimal Markdown for the summaries: headings, bullet lists, task items, bold. Text is escaped first.
 function renderMarkdown(markdown) {
@@ -185,7 +219,8 @@ function renderMeetingList() {
     el("div", { class: "meeting-row" + (m.id === state.selected ? " selected" : ""), onclick: () => selectMeeting(m.id) },
       el("div", { class: "title" }, m.title),
       el("div", { class: "meta" }, m.started_at.slice(0, 16).replace("T", " "), " · ", duration(m.duration_seconds),
-        STATUS[m.status] ? el("span", { class: "badge" }, STATUS[m.status]) : null))));
+        STATUS[m.status] ? el("span", { class: "badge" },
+          m.status === "processing" && m.id === live.id && live.percent != null ? `transcribing… ${live.percent}%` : STATUS[m.status]) : null))));
 }
 
 async function selectMeeting(id, keepTab) {
@@ -209,7 +244,17 @@ function renderDetail() {
   const labels = m.speaker_labels || { me: "You", others: "Others" };
   const notices = [];
   if (m.status === "recording") notices.push("Recording… the transcript and summary appear here when you stop.");
-  if (m.status === "processing") notices.push("Transcribing… this takes a few minutes for a long meeting.");
+  if (m.status === "processing" && m.id === live.id) {
+    const percent = live.percent != null ? ` ${live.percent}%` : "";
+    const notice = el("div", { class: "notice" }, `Transcribing${percent}${timeLeft(live.seconds_left)}… ` +
+      "You can keep dictating meanwhile; each finished part is saved, so quitting the app loses nothing.");
+    const bar = el("div", { class: "progress inline" + (live.percent == null ? " busy" : "") }, el("div", { class: "bar" }));
+    bar.firstChild.style.width = `${live.percent || 0}%`;
+    notice.append(bar);
+    notices.push(notice);
+  } else if (m.status === "processing") {
+    notices.push("Waiting its turn: another meeting is being transcribed first.");
+  }
   if (m.status === "failed") notices.push(m.error || "Something went wrong.");
   if (!m.system_audio) notices.push("Only your microphone was recorded: allow Screen & System Audio Recording " +
     "for Speech to Text (System Settings → Privacy & Security) to include the other people.");
@@ -224,7 +269,7 @@ function renderDetail() {
     el("h2", {}, m.title),
     el("div", { class: "meta" }, m.started_at.slice(0, 16), " · ", duration(m.duration_seconds),
       m.language ? ` · ${m.language.toUpperCase()}` : ""),
-    ...notices.map((text) => el("div", { class: "notice" }, text)),
+    ...notices.map((text) => typeof text === "string" ? el("div", { class: "notice" }, text) : text),
     el("div", { class: "toolbar" },
       (state.subtab === "summary" ? summaryText : m.transcript_text)
         ? el("button", { onclick: () => copy(state.subtab === "summary" ? summaryText : m.transcript_text) },
@@ -279,24 +324,44 @@ async function pollState() {
   try {
     const s = await api("/api/state");
     const button = document.getElementById("meeting-button");
-    button.classList.toggle("recording", s.meeting_recording);
-    button.textContent = s.meeting_recording ? `■ Stop meeting notes (${clock(s.meeting_elapsed)})` : "● Start meeting notes";
-    button.disabled = !s.model_ready && !s.meeting_recording;
+    const inFlight = toggling || s.meeting_phase === "starting" || s.meeting_phase === "stopping";
+    if (!toggling) {
+      button.classList.toggle("recording", s.meeting_recording);
+      button.replaceChildren(el("span", { class: "dot" }),
+        s.meeting_phase === "stopping" ? "Stopping…" : s.meeting_phase === "starting" ? "Starting…" :
+        s.meeting_recording ? `Stop meeting notes (${clock(s.meeting_elapsed)})` : "Start meeting notes");
+    }
+    button.disabled = inFlight || (!s.model_ready && !s.meeting_recording);
+    document.getElementById("meters").classList.toggle("hidden", !s.meeting_recording);
+    if (s.meeting_recording) { setLevel("meter-me", s.meeting_levels.me); setLevel("meter-others", s.meeting_levels.others); }
+    const progress = document.getElementById("progress");
+    progress.classList.toggle("hidden", !s.meeting_progress);
+    progress.classList.toggle("busy", !!s.meeting_progress && s.meeting_percent == null);
+    progress.firstElementChild.style.width = `${s.meeting_percent || 0}%`;
     const status = document.getElementById("meeting-status");
-    if (s.meeting_progress) status.textContent = s.meeting_progress;
+    if (s.meeting_progress) status.textContent = s.meeting_progress + timeLeft(s.meeting_seconds_left);
     else if (!s.model_ready) status.textContent = "Loading the speech model…";
-    else if (status.textContent.startsWith("Transcribing") || status.textContent.startsWith("Summarizing")) status.textContent = "";
+    else if (status.textContent.startsWith("Transcribing") || status.textContent.startsWith("Summarizing") ||
+             status.textContent.startsWith("Waiting")) status.textContent = "";
+    const percentChanged = s.meeting_percent !== live.percent || s.meeting_processing_id !== live.id;
+    live = { id: s.meeting_processing_id, percent: s.meeting_percent, seconds_left: s.meeting_seconds_left };
     if (s.meetings_version !== state.meetingsVersion) { state.meetingsVersion = s.meetings_version; loadMeetings(); }
+    else if (percentChanged && state.detail && state.detail.status === "processing") { renderMeetingList(); renderDetail(); }
   } catch (error) { /* the app is restarting */ }
 }
 
+let toggling = false;  // a click is being handled: the button shows it until the app answers
 document.getElementById("meeting-button").addEventListener("click", async (event) => {
-  const recording = event.target.classList.contains("recording");
+  const button = event.currentTarget;
+  const recording = button.classList.contains("recording");
+  toggling = button.disabled = true;
+  button.replaceChildren(el("span", { class: "dot" }), recording ? "Stopping…" : "Starting…");
   try {
     const result = await api(recording ? "/api/meetings/stop" : "/api/meetings/start", {});
     if (result.meeting_id) { state.selected = result.meeting_id; }
     if (result.message) flash(result.message);
   } catch (error) { alert(error.message); }
+  toggling = false;
   pollState();
 });
 

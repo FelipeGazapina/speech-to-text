@@ -40,6 +40,7 @@ class Recorder:
             self._chunks = []
             self._session += 1
             session = self._session
+        self.level = 0.0
 
         def open_stream():
             try:

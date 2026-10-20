@@ -34,6 +34,10 @@ class MeetingController:
         self.is_model_ready = is_model_ready
         self.on_notes_ready = on_notes_ready
         self.current_id: int | None = None
+        # Starting and stopping take seconds (ScreenCaptureKit, closing the microphone). The phase
+        # tells the menu and the window what to show, and makes a click during either a no-op.
+        self.phase = "idle"  # idle | starting | recording | stopping
+        self.processing_id: int | None = None  # the meeting being transcribed or summarized
         self.progress: Progress | None = None  # e.g. "Transcribing the meeting… 40%", with percent and ETA
         self.version = 0  # bumped on every change, so the window knows when to refresh
         self.missing_system_audio = False  # the last meeting couldn't record the computer's audio
@@ -43,7 +47,7 @@ class MeetingController:
 
     @property
     def recording(self) -> bool:
-        return self.current_id is not None
+        return self.phase == "recording"
 
     @property
     def levels(self) -> dict[str, float]:
@@ -60,28 +64,43 @@ class MeetingController:
     # --- recording ---
 
     def start(self) -> dict:
+        """Idempotent: while a meeting is recording (or being started by another click) this
+        returns it instead of starting a second one."""
         with self._lock:
-            if self.current_id is not None:
-                return {"meeting_id": self.current_id}
-            folder = self.store.temp_dir / time.strftime("%Y%m%d-%H%M%S")
-            system_audio = self.recorder.start(folder)
-            self.current_id = self.store.start(folder, system_audio)
+            if self.phase != "idle":
+                return {"meeting_id": self.current_id} if self.current_id is not None else {}
+            self._set_phase("starting")
+            try:
+                folder = self.store.temp_dir / time.strftime("%Y%m%d-%H%M%S")
+                system_audio = self.recorder.start(folder)
+                self.current_id = self.store.start(folder, system_audio)
+            except BaseException:
+                self._set_phase("idle")
+                raise
             self.missing_system_audio = not system_audio
             log.info("Meeting #%d started (computer audio: %s)", self.current_id, system_audio)
-            self._changed()
+            self._set_phase("recording")
             return {"meeting_id": self.current_id, "system_audio": system_audio}
 
     def stop(self) -> dict:
         with self._lock:
-            if self.current_id is None:
+            if self.phase != "recording":
                 return {}
+            self._set_phase("stopping")
             meeting_id, self.current_id = self.current_id, None
-            duration = self.recorder.stop()
+            try:
+                duration = self.recorder.stop()
+            finally:
+                self._set_phase("idle")
             self.store.update(meeting_id, duration_seconds=duration, status="processing")
             log.info("Meeting #%d stopped after %.0fs", meeting_id, duration)
             self._queue.put(meeting_id)
             self._changed()
             return {"meeting_id": meeting_id, "message": "Transcribing the meeting…"}
+
+    def _set_phase(self, phase: str) -> None:
+        self.phase = phase
+        self._changed()
 
     def resume_unfinished(self) -> None:
         """Meetings cut short by a quit or crash: transcribe what was recorded."""
@@ -105,8 +124,9 @@ class MeetingController:
             return
 
         def run() -> None:
+            self.processing_id = meeting_id
             summarize_meeting(meeting_id, self.store, self.summarizer, self._set_progress)
-            self.progress = None
+            self.processing_id = self.progress = None
             self._changed()
 
         threading.Thread(target=run, name="meeting-summary", daemon=True).start()
@@ -133,6 +153,7 @@ class MeetingController:
     def _worker(self) -> None:
         while True:
             meeting_id = self._queue.get()
+            self.processing_id = meeting_id
             while not self.is_model_ready():
                 self.progress = Progress("Waiting for the speech model to load…")
                 time.sleep(1)
@@ -143,5 +164,5 @@ class MeetingController:
             except Exception:
                 log.exception("Processing meeting #%d failed", meeting_id)
             finally:
-                self.progress = None
+                self.processing_id = self.progress = None
                 self._changed()

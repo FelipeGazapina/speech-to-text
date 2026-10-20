@@ -40,6 +40,10 @@ log = logging.getLogger(__name__)
 
 ICON_IDLE, ICON_RECORDING, ICON_WORKING, ICON_LOADING, ICON_ERROR = "🎙", "🔴", "💭", "⏳", "⚠️"
 ICON_MEETING = "📝"
+# The menu bar title is redrawn 4x a second: a spinner while something is being worked on, and a
+# live loudness bar while recording, so you can tell at a glance that the app is alive and hearing you.
+SPINNER = "◐◓◑◒"
+LEVEL_BARS = "▁▂▃▄▅▆▇█"
 RECENT_COUNT = 10
 # A dictation that waited longer than this to be transcribed isn't pasted: the cursor has probably
 # moved on, and text appearing out of nowhere is worse than finding it under Recent.
@@ -80,6 +84,26 @@ WELCOME = (
 
 def play_sound(name: str) -> None:
     subprocess.Popen(["afplay", f"/System/Library/Sounds/{name}.aiff"])
+
+
+def level_bar(rms: float) -> str:
+    """One glyph for how loud the audio is: silence at -50 dB, loud speech at -14 dB."""
+    db = 20 * np.log10(max(rms, 1e-6))
+    index = int((db + 50) / 36 * (len(LEVEL_BARS) - 1))
+    return LEVEL_BARS[max(0, min(len(LEVEL_BARS) - 1, index))]
+
+
+def clock(seconds: float) -> str:
+    seconds = int(seconds)
+    hours, rest = divmod(seconds, 3600)
+    return f"{hours}:{rest // 60:02d}:{rest % 60:02d}" if hours else f"{rest // 60}:{rest % 60:02d}"
+
+
+def time_left(seconds: float | None) -> str:
+    if seconds is None:
+        return ""
+    minutes = int(seconds / 60 + 0.5)
+    return " · less than a minute left" if minutes < 1 else f" · about {minutes} min left"
 
 
 @dataclass
@@ -548,17 +572,25 @@ class SpeechToTextApp(rumps.App):
 
     def _refresh_status(self) -> None:
         hotkey = self.config.hotkey.replace("_", " ")
+        spinner = SPINNER[self._ticks % len(SPINNER)]
+        meeting = self.meetings.progress
         if self.recorder.is_recording:
-            elapsed = int(time.monotonic() - self.recording_started)
-            title, status = f"{ICON_RECORDING} {elapsed // 60}:{elapsed % 60:02d}", f"Recording… tap {hotkey} to stop"
+            elapsed = time.monotonic() - self.recording_started
+            title = f"{ICON_RECORDING} {level_bar(self.recorder.level)} {clock(elapsed)}"
+            status = f"Recording… tap {hotkey} to stop"
         elif self.jobs.unfinished_tasks and self.model_ready:
-            title, status = ICON_WORKING, "Transcribing…"
+            title = f"{ICON_WORKING} {spinner}"
+            status = "Transcribing your dictation…" + (" (the meeting notes wait their turn)" if meeting else "")
         elif self.meetings.recording:
-            elapsed = int(self.meetings.recorder.elapsed)
-            title = f"{ICON_MEETING} {elapsed // 60}:{elapsed % 60:02d}"
-            status = "Recording meeting notes (dictation still works)"
-        elif self.meetings.progress:
-            title, status = ICON_WORKING, self.meetings.progress
+            levels = self.meetings.levels
+            title = f"{ICON_MEETING} {level_bar(max(levels.values(), default=0.0))} {clock(self.meetings.recorder.elapsed)}"
+            heard = " · ".join(f"{name} {level_bar(level)}" for name, level in (("you", levels.get("me", 0.0)),
+                                                                                 ("others", levels.get("others", 0.0))))
+            status = f"Recording meeting notes · {heard} (dictation still works)"
+        elif meeting:
+            percent = f" {meeting.percent}%" if meeting.percent is not None else ""
+            title = f"{ICON_MEETING} {spinner}{percent}"
+            status = meeting.message + time_left(meeting.seconds_left)
         elif not self.model_ready and self.download_progress and self.download_progress[1]:
             done, total = self.download_progress
             percent = min(99, done * 100 // total)
@@ -567,7 +599,7 @@ class SpeechToTextApp(rumps.App):
         elif self.missing_permissions:
             title, status = ICON_ERROR, f"Needs permission: {', '.join(self.missing_permissions)} (see below)"
         elif not self.model_ready:
-            title, status = ICON_LOADING, "Loading the speech model… (dictation starts working when it's ready)"
+            title, status = f"{ICON_LOADING} {spinner}", "Loading the speech model… (dictation starts working when it's ready)"
         elif self.error:
             title, status = ICON_ERROR, self.error[:120]
         else:
@@ -660,6 +692,8 @@ class SpeechToTextApp(rumps.App):
 
     def toggle_meeting(self, _item=None) -> None:
         # Starting talks to ScreenCaptureKit and waits for it: never on the main thread.
+        if self.meetings.phase in ("starting", "stopping"):
+            return  # a second click, from the menu or the window, while the first is still being handled
         action = self._stop_meeting if self.meetings.recording else self._start_meeting
         threading.Thread(target=action, name="meeting-toggle", daemon=True).start()
 
@@ -696,9 +730,12 @@ class SpeechToTextApp(rumps.App):
         self.window.show(url + (f"&meeting={meeting_id}" if meeting_id else ""))
 
     def _refresh_meeting_ui(self) -> None:
-        if self.meetings.recording:
-            elapsed = int(self.meetings.recorder.elapsed)
-            title = f"⏹ Stop meeting notes ({elapsed // 60}:{elapsed % 60:02d})"
+        if self.meetings.phase == "stopping":
+            title = "Stopping meeting notes…"
+        elif self.meetings.phase == "starting":
+            title = "Starting meeting notes…"
+        elif self.meetings.recording:
+            title = f"⏹ Stop meeting notes ({clock(self.meetings.recorder.elapsed)})"
         else:
             title = f"{ICON_MEETING} Start meeting notes"
         if self.meeting_item.title != title:

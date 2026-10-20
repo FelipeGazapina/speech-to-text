@@ -30,6 +30,8 @@ class AppBackend:
         recorder, progress = self.meetings.recorder, self.meetings.progress
         return {
             "meeting_recording": self.meetings.recording,
+            "meeting_phase": self.meetings.phase,
+            "meeting_processing_id": self.meetings.processing_id,
             "meeting_elapsed": recorder.elapsed if self.meetings.recording else 0,
             "meeting_levels": self.meetings.levels,
             "meeting_progress": progress.message if progress else None,

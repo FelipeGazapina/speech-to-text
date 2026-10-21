@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 import platform
 import sys
@@ -66,11 +67,15 @@ class Transcriber:
         self._model_thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="whisper")
         self._reload_needed = False
         self.timeouts = 0  # in a row; reset by any call that finishes
+        self.unload_after = config.unload_after_minutes * 60
+        self._last_used = time.monotonic()
+        self._idle_timer: threading.Timer | None = None
 
     def _on_model_thread(self, fn, *args, timeout: float | None = None, **kwargs):
         """Run fn on the model thread. If it takes longer than timeout seconds, the stuck thread is
         abandoned for a fresh one (which reloads the model first) and TranscriptionTimeout is raised."""
         executor = self._model_thread
+        self._last_used = time.monotonic()
         future = executor.submit(self._call, fn, args, kwargs)
         try:
             result = future.result(timeout=timeout)
@@ -83,10 +88,45 @@ class Transcriber:
         return result
 
     def _call(self, fn, args, kwargs):
+        try:
+            if self._reload_needed:
+                self._load()
+                self._reload_needed = False
+            return fn(*args, **kwargs)
+        finally:
+            if self.backend == "mlx":
+                # MLX keeps every buffer it freed for reuse, one pool per size, so the pool grows
+                # with each new recording length and never shrinks on its own (2 GB after a day).
+                import mlx.core as mx
+
+                mx.clear_cache()
+            self._last_used = time.monotonic()
+            self._schedule_unload()
+
+    def warm(self) -> None:
+        """Start loading the model if it isn't in memory, without waiting."""
         if self._reload_needed:
-            self._reload_needed = False
-            self._load()
-        return fn(*args, **kwargs)
+            self._model_thread.submit(self._call, lambda: None, (), {})
+
+    def _schedule_unload(self) -> None:
+        if not self.unload_after:
+            return
+        if self._idle_timer:
+            self._idle_timer.cancel()
+        self._idle_timer = threading.Timer(self.unload_after, self._unload_when_idle)
+        self._idle_timer.daemon = True
+        self._idle_timer.start()
+
+    def _unload_when_idle(self) -> None:
+        def unload() -> None:
+            if self._idle():
+                log.info("No dictation for %.0f minutes: unloading the model to free memory", self.unload_after / 60)
+                self._drop_model()
+
+        self._model_thread.submit(unload)
+
+    def _idle(self) -> bool:
+        return time.monotonic() - self._last_used >= self.unload_after
 
     def _replace_model_thread(self, stuck: ThreadPoolExecutor) -> None:
         if self._model_thread is not stuck:
@@ -94,8 +134,13 @@ class Transcriber:
         stuck.shutdown(wait=False, cancel_futures=True)
         self._model_thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="whisper")
         # MLX ties arrays to the thread that made them: the new thread must load its own copy.
+        self._drop_model()
+
+    def _drop_model(self) -> None:
+        self._model = None
         if self.backend == "mlx":
             try:
+                import mlx.core as mx
                 import mlx_whisper.audio
                 from mlx_whisper.transcribe import ModelHolder
 
@@ -104,6 +149,8 @@ class Transcriber:
                     cache_clear = getattr(getattr(mlx_whisper.audio, name), "cache_clear", None)
                     if cache_clear:
                         cache_clear()
+                gc.collect()
+                mx.clear_cache()
             except Exception:
                 log.exception("Couldn't reset the MLX caches")
         self._reload_needed = True

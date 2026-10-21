@@ -266,6 +266,7 @@ hotkey = "right_option"   # or fn, right_command, right_control, f13…f19
 [transcription]
 model = "large-v3-turbo"  # "small" is faster on older/Intel Macs (avoid ".en" models: English only)
 languages = ["en", "pt"]  # detected per dictation, only among these; ["pt"] to always use Portuguese
+unload_after_minutes = 15 # free the model's 1.5 GB of memory after this long without dictating; 0 = never
 
 [cleanup]
 model = "qwen2.5:3b"      # any Ollama model; try "gemma3:4b" or "llama3.2:3b"

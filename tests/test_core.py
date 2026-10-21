@@ -17,6 +17,7 @@ def test_default_config():
     assert config.transcription.model == "large-v3-turbo"
     assert config.cleanup.enabled is True
     assert config.transcription.languages == ["en", "pt"]
+    assert config.transcription.unload_after_minutes == 15
     assert config.history.enabled and config.history.learn
     assert config.replacements == {}
 

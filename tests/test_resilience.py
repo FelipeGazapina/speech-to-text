@@ -172,6 +172,76 @@ def test_a_hung_transcription_times_out_and_the_next_one_works(monkeypatch):
     assert transcriber.timeouts == 0
 
 
+# --- memory: the model leaves when nobody dictates ---
+
+
+class CountingTranscriber(Transcriber):
+    def __init__(self, unload_after_minutes):
+        super().__init__(
+            TranscriptionConfig(backend="faster-whisper", model="tiny", languages=["en"], unload_after_minutes=unload_after_minutes)
+        )
+        self.loads = 0
+
+    def _load(self):
+        self.loads += 1
+        self._model = object()
+
+    def _run(self, audio, language, prompt):
+        return "hi"
+
+
+def wait_for_model_thread(transcriber):
+    transcriber._model_thread.submit(lambda: None).result()
+
+
+def test_the_model_is_unloaded_after_idling_and_reloaded_by_the_next_dictation():
+    transcriber = CountingTranscriber(unload_after_minutes=0.3 / 60)
+    audio = np.zeros(SAMPLE_RATE, dtype=np.float32)
+    transcriber.load()
+    assert transcriber.transcribe(audio, "en", None) == "hi" and transcriber.loads == 1
+
+    time.sleep(0.6)
+    assert transcriber._model is None
+    assert transcriber.transcribe(audio, "en", None) == "hi" and transcriber.loads == 2
+    time.sleep(0.6)
+    assert transcriber._model is None
+
+
+def test_warm_reloads_in_the_background_so_the_dictation_does_not_wait():
+    transcriber = CountingTranscriber(unload_after_minutes=0.3 / 60)
+    transcriber.load()
+    time.sleep(0.6)
+    assert transcriber._model is None
+    transcriber.warm()
+    wait_for_model_thread(transcriber)
+    assert transcriber.loads == 2
+    assert transcriber.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), "en", None) == "hi"
+    assert transcriber.loads == 2
+
+
+def test_zero_keeps_the_model_loaded():
+    transcriber = CountingTranscriber(unload_after_minutes=0)
+    transcriber.load()
+    time.sleep(0.4)
+    assert transcriber._model is not None and transcriber._idle_timer is None
+
+
+def test_mlx_scratch_buffers_are_released_after_every_call(monkeypatch):
+    cleared = []
+    mlx = types.ModuleType("mlx")
+    mlx.core = types.ModuleType("mlx.core")
+    mlx.core.clear_cache = lambda: cleared.append(True)
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx.core)
+
+    transcriber = CountingTranscriber(unload_after_minutes=0)
+    transcriber.backend = "mlx"
+    transcriber.load()
+    assert len(cleared) == 1
+    transcriber.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), "en", None)
+    assert len(cleared) == 2
+
+
 # --- saving what was recorded, and telling the user after a restart ---
 
 

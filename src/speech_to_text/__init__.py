@@ -1,3 +1,3 @@
 """Local, free push-to-talk dictation for macOS, tuned for software engineers."""
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"

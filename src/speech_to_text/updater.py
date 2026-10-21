@@ -135,8 +135,11 @@ def install_from_dmg(dmg: Path, app_path: Path) -> None:
 
 
 def relaunch(app_path: Path) -> None:
-    """Open the (new) app once this process has quit."""
-    subprocess.Popen(["/bin/sh", "-c", f'sleep 1; open "{app_path}"'], start_new_session=True)
+    """Open the (new) app once this process has quit. `open` would only bring this copy to the front
+    while it is still running, so the helper waits for our pid to go away first (30 s at most)."""
+    script = (f"for i in $(seq 300); do kill -0 {os.getpid()} 2>/dev/null || break; sleep 0.1; done; "
+              f'open "{app_path}"')
+    subprocess.Popen(["/bin/sh", "-c", script], start_new_session=True)
 
 
 def verify_signature(app: Path) -> None:

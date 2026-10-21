@@ -814,9 +814,13 @@ class SpeechToTextApp(rumps.App):
 
     def reload(self, _item) -> None:
         """Restart the app (picks up config changes and newly granted permissions)."""
-        if FROZEN:
-            os.execv(sys.executable, [sys.executable])
-        os.execv(sys.executable, [sys.executable, "-m", "speech_to_text"])
+        app_path = updater.running_app_path()
+        if app_path is None:
+            os.execv(sys.executable, [sys.executable, "-m", "speech_to_text"])
+        # A fresh copy, opened once this one has quit. Replacing the process image in place (execv)
+        # keeps the pid, and macOS then refuses the new image its menu bar item.
+        updater.relaunch(app_path)
+        rumps.quit_application()
 
 
 def _login_item_enabled() -> bool:

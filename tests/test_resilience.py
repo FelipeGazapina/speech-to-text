@@ -41,11 +41,24 @@ def test_watchdog_fires_once_when_the_main_thread_stops_beating():
 
 
 class FakeStream:
-    def __init__(self, callback, hang_on_close=False):
-        self.callback, self.hang_on_close, self.closed = callback, hang_on_close, False
+    """Hands out 0.1 s blocks of audio at 0.3 to whoever reads it, like PortAudio's blocking read."""
+
+    read_available = 123  # what is still buffered when the recording stops
+
+    def __init__(self, hang_on_close=False):
+        self.hang_on_close, self.closed, self.read_sizes = hang_on_close, False, []
 
     def start(self):
-        self.callback(np.full((1600, 1), 0.3, dtype=np.float32), 1600, None, None)
+        pass
+
+    @property
+    def reads(self):
+        return len(self.read_sizes)
+
+    def read(self, frames):
+        self.read_sizes.append(frames)
+        time.sleep(0.01)
+        return np.full((frames, 1), 0.3, dtype=np.float32), False
 
     def abort(self, ignore_errors=True):
         if self.hang_on_close:
@@ -62,9 +75,10 @@ def fake_sounddevice(monkeypatch):
     module.behaviour = {"open_delay": 0.0, "hang_on_close": False}
     module.streams = []
 
-    def input_stream(samplerate, channels, dtype, callback):
+    def input_stream(samplerate, channels, dtype, latency, callback=None):
+        assert callback is None, "audio must be read from our own thread, never through a callback"
         time.sleep(module.behaviour["open_delay"])
-        stream = FakeStream(callback, module.behaviour["hang_on_close"])
+        stream = FakeStream(module.behaviour["hang_on_close"])
         module.streams.append(stream)
         return stream
 
@@ -73,17 +87,41 @@ def fake_sounddevice(monkeypatch):
     return module
 
 
+def wait_for_audio(recorder, seconds=0.5):
+    deadline = time.monotonic() + seconds
+    while len(recorder.snapshot()) == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
 def test_stopping_never_waits_for_a_stuck_audio_device(fake_sounddevice):
     fake_sounddevice.behaviour["hang_on_close"] = True
     recorder = Recorder()
     recorder.start()
+    wait_for_audio(recorder)
     started = time.monotonic()
     audio = recorder.stop()
     assert time.monotonic() - started < 0.5  # the old code waited here forever
-    assert len(audio) == 1600 and not recorder.is_recording
+    assert len(audio) > 800 and not recorder.is_recording
+    assert fake_sounddevice.streams[0].read_sizes[-1] == 123 and len(audio) % 800 == 123  # buffered at stop: kept
     fake_sounddevice.behaviour["hang_on_close"] = False
     recorder.start()  # and the next recording still works
-    assert recorder.is_recording and len(recorder.stop()) == 1600
+    wait_for_audio(recorder)
+    assert recorder.is_recording and len(recorder.stop()) > 0
+
+
+def test_audio_read_after_stop_is_dropped(fake_sounddevice):
+    recorder = Recorder()
+    recorder.start()
+    wait_for_audio(recorder)
+    stream = fake_sounddevice.streams[0]
+    recorder.stop()
+    reads = stream.reads
+    time.sleep(0.1)
+    assert stream.reads <= reads + 1  # the reader thread noticed the stop
+    recorder.start()
+    time.sleep(0.05)
+    assert fake_sounddevice.streams[1].reads > 0 and stream.reads <= reads + 1
+    recorder.stop()
 
 
 def test_a_microphone_that_never_opens_times_out(fake_sounddevice, monkeypatch):

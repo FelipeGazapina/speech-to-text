@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .recorder import close_stream, resample
+from .recorder import MicStream, resample
 from .transcriber import SAMPLE_RATE
 from .watchdog import Timeout, run_with_timeout
 
@@ -75,31 +75,16 @@ class PcmWriter:
 class MicCapture:
     def __init__(self, writer: PcmWriter):
         self.writer = writer
-        self._stream = None
-        self._rate = SAMPLE_RATE
+        self._mic: MicStream | None = None
 
     def start(self) -> None:
-        import sounddevice as sd
-
-        def on_audio(indata, frames, time_info, status) -> None:
-            mono = indata[:, 0]
-            self.writer.write(mono if self._rate == SAMPLE_RATE else resample(mono, self._rate, SAMPLE_RATE))
-
-        def open_stream():
-            try:
-                stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", callback=on_audio)
-            except sd.PortAudioError:
-                self._rate = int(sd.query_devices(kind="input")["default_samplerate"])
-                stream = sd.InputStream(samplerate=self._rate, channels=1, dtype="float32", callback=on_audio)
-            stream.start()
-            return stream
-
-        self._stream = run_with_timeout(open_stream, 5, "Opening the microphone")
+        self._mic = MicStream(self.writer.write)
+        self._mic.start()
 
     def stop(self) -> None:
-        stream, self._stream = self._stream, None
-        if stream is not None:
-            threading.Thread(target=close_stream, args=(stream, "meeting microphone"), daemon=True).start()
+        mic, self._mic = self._mic, None
+        if mic is not None:
+            mic.stop()
 
 
 # --- the computer's audio, through ScreenCaptureKit ---

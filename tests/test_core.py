@@ -1,3 +1,6 @@
+import sys
+import types
+
 import numpy as np
 import pytest
 
@@ -74,11 +77,19 @@ def test_unknown_hotkey():
         validate_hotkey("caps_lock")
 
 
-def test_whisper_prompt_puts_user_vocabulary_first_and_stays_short():
+def test_whisper_prompt_puts_user_vocabulary_first():
     prompt = whisper_prompt("en", ["Zyxel", "API"])
     assert prompt.index("Zyxel") < prompt.index("JSON")
     assert prompt.count("API") == 1
-    assert len(prompt.split()) < 200
+
+
+@pytest.mark.parametrize("vocabulary", [None, [f"fetchUserById{i}" for i in range(60)]])
+def test_whisper_prompt_glossary_stays_far_below_whisper_prompt_window(vocabulary):
+    # Whisper keeps the last 223 prompt tokens. large-v3-turbo looped ("the most important... the most
+    # important...") when the glossary came near that, on dictations that opened with silence: measured
+    # 83 glossary tokens looped 0 of 24 times, 197 tokens 3 of 24, 232 tokens 17 of 24. Text is ~2.5 chars/token.
+    assert len(whisper_prompt("en", vocabulary)) <= 300
+    assert len(whisper_prompt("pt", vocabulary)) <= 300
 
 
 def test_whisper_prompt_language_and_recent_style():
@@ -153,3 +164,39 @@ def test_set_top_level_value_keeps_the_rest_of_the_file(tmp_path):
     set_top_level_value("hotkey", "f18", path)
     config = load_config(path)
     assert (config.hotkey, config.cleanup.model) == ("f18", "gemma3:4b")
+
+
+def _fake_mlx_whisper(monkeypatch, outcomes):
+    """outcomes(prompt, kwargs) -> (text, compression_ratio, avg_logprob); returns the calls it saw."""
+    calls = []
+
+    def transcribe(audio, *, initial_prompt=None, **kwargs):
+        calls.append((initial_prompt, kwargs.get("temperature")))
+        text, ratio, logprob = outcomes(initial_prompt, kwargs)
+        return {"text": text, "segments": [{"compression_ratio": ratio, "avg_logprob": logprob}]}
+
+    monkeypatch.setitem(sys.modules, "mlx_whisper", types.SimpleNamespace(transcribe=transcribe))
+    return calls
+
+
+def _mlx_transcriber():
+    return Transcriber(TranscriptionConfig(backend="mlx", model="large-v3-turbo", languages=["en"]))
+
+
+def test_a_looping_prompted_pass_is_redone_without_the_prompt(monkeypatch):
+    # Noise with the glossary prompt came back as "Glossary, JSON, SQL, SQL, ..." (compression ratio 17.5)
+    # after 5-28s of temperature retries; without the prompt the same audio was clean.
+    calls = _fake_mlx_whisper(
+        monkeypatch,
+        lambda prompt, kwargs: ("Glossary, JSON, SQL, SQL, SQL", 17.5, -0.17) if prompt else ("I need a hand.", 1.0, -0.2),
+    )
+    audio = np.zeros(SAMPLE_RATE, dtype=np.float32)
+    assert _mlx_transcriber()._run(audio, "en", "A glossary prompt") == "I need a hand."
+    assert calls == [("A glossary prompt", 0.0), (None, None)]  # first pass can't spend retries; the redo can
+
+
+def test_a_confident_prompted_pass_is_kept(monkeypatch):
+    calls = _fake_mlx_whisper(monkeypatch, lambda prompt, kwargs: ("Open the Supabase dashboard.", 1.2, -0.25))
+    audio = np.zeros(SAMPLE_RATE, dtype=np.float32)
+    assert _mlx_transcriber()._run(audio, "en", "A glossary prompt") == "Open the Supabase dashboard."
+    assert len(calls) == 1

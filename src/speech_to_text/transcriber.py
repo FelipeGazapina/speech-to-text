@@ -19,6 +19,8 @@ from .config import TranscriptionConfig
 log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16_000
+_MAX_COMPRESSION_RATIO = 2.4  # mlx_whisper's defaults for deciding a decode needs another attempt
+_MIN_AVG_LOGPROB = -1.0
 
 
 class TranscriptionTimeout(TimeoutError):
@@ -237,15 +239,27 @@ class Transcriber:
         if self.backend == "mlx":
             import mlx_whisper
 
-            result = mlx_whisper.transcribe(
-                audio,
-                path_or_hf_repo=_MLX_REPOS.get(self.config.model, self.config.model),
-                language=language,
-                initial_prompt=prompt,
-                # Each dictation is independent; conditioning on previous windows
-                # makes long recordings prone to repetition loops.
-                condition_on_previous_text=False,
-            )
+            def transcribe(prompt: str | None, **options):
+                return mlx_whisper.transcribe(
+                    audio,
+                    path_or_hf_repo=_MLX_REPOS.get(self.config.model, self.config.model),
+                    language=language,
+                    initial_prompt=prompt,
+                    # Each dictation is independent; conditioning on previous windows
+                    # makes long recordings prone to repetition loops.
+                    condition_on_previous_text=False,
+                    **options,
+                )
+
+            if not prompt:
+                return str(transcribe(None).get("text", "")).strip()
+            # A prompted pass that loops or echoes the glossary would otherwise burn up to five more
+            # 224-token retries (10-28s) and then hand back the last bad attempt. Fail fast, then redo
+            # without the prompt, which is what keeps the decoder grounded in the audio.
+            result = transcribe(prompt, temperature=0.0)
+            if _gave_up(result):
+                log.info("Prompted pass looped or lost confidence; redoing it without the prompt")
+                result = transcribe(None)
             return str(result.get("text", "")).strip()
 
         if self._model is None:
@@ -259,6 +273,14 @@ class Transcriber:
             beam_size=5,
         )
         return " ".join(segment.text.strip() for segment in segments).strip()
+
+
+def _gave_up(result: dict) -> bool:
+    """Whisper's own retry criteria: a window that repeats itself or that it has little confidence in."""
+    return any(
+        segment["compression_ratio"] > _MAX_COMPRESSION_RATIO or segment["avg_logprob"] < _MIN_AVG_LOGPROB
+        for segment in result.get("segments", [])
+    )
 
 
 def _folder_size(folder: Path) -> int:
